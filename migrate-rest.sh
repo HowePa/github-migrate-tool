@@ -62,7 +62,7 @@ function get_github_repo_submodules() {
 function import_to_gitlab() {
     # param: github repo id
     api_handle="$TARGET_PROTO://$TARGET_HOST/api/v4/import/github"
-    message=$(
+    errors=$(
         curl --silent --request POST \
             --url $api_handle \
             --header "content-type: application/json" \
@@ -73,30 +73,9 @@ function import_to_gitlab() {
             "target_namespace": "'$TARGET_GROUP'"
         }' | jq .errors | sed -e 's/\"//g'
     )
-    if [ "$message" != "null" ]; then
-        print_error "$message"
+    if [ "$errors" != "null" ]; then
+        print_error "$errors"
     fi
-}
-
-function update_gitlab_submodule_url() {
-    # param: gitlab project name or id
-    new_content=$(
-        curl --silent --request GET \
-            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            --url "$TARGET_PROTO://$TARGET_HOST/api/v4/projects/$1/repository/files/.gitmodules/raw?ref=master" |
-            sed -e 's/https:\/\/github.com\/[^\/]*\//'$TARGET_PROTO':\/\/'$TARGET_HOST'\/'$TARGET_GROUP'\//g' |
-            base64
-    )
-    curl --request PUT \
-        --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-        --header "Content-Type: application/json" \
-        --url "$TARGET_PROTO://$TARGET_HOST/api/v4/projects/$1/repository/files/.gitmodules" \
-        --data '{
-            "branch": "master", 
-            "content": "'$new_content'", 
-            "commit_message": "update .gitmodules",
-            "encoding": "base64"
-        }'
 }
 
 function online_recursive_migrate() {
@@ -113,17 +92,87 @@ function online_recursive_migrate() {
     import_to_gitlab $source_repo_id
 }
 
-function online_recursive_update() {
-    # Todo: update specifica branch
-    # param: github repo url
-    source_repo=$1
-    source_repo_name=$(get_github_repo_name $source_repo)
-    # Recursive migrate submodules
-    get_github_repo_submodules $source_repo_name | while read submodule; do
-        online_recursive_update $submodule
-    done
-    # Import project from github
-    source_repo_id=$(get_github_repo_id $source_repo_name)
+function get_gitlab_proj_name() {
+    # param: gitlab project url
+    echo $(echo ${1##*/} | sed -e 's/.git//g')
+}
+
+function get_gitlab_proj_id() {
+    # param: gitlab project name
+    echo $(
+        curl --silent --request GET \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --header "Content-Type: application/json" \
+            --url "$TARGET_PROTO://$TARGET_HOST/api/v4/projects/$TARGET_GROUP%2F$1" |
+            jq .id
+    )
+}
+
+function get_gitlab_submodule_branch() {
+    # param: gitlab project name or id, branch
+    echo "$(
+        curl --silent --request GET \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --url "$TARGET_PROTO://$TARGET_HOST//api/v4/projects/$1/repository/files/.gitmodules/raw?ref=$2" |
+            sed 's/\t//g' |
+            awk '{FS="submodule \"| = "}{
+                if($1=="\["){printf "\n"}
+                else if($1=="url"){printf $2}
+                else if($1=="branch"){printf " " $2}
+                } END {printf "\n"}'
+    )"
+}
+
+function update_gitlab_submodule_url() {
+    # param: gitlab project name or id
+    new_content=$(
+        curl --silent --request GET \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --url "$TARGET_PROTO://$TARGET_HOST/api/v4/projects/$1/repository/files/.gitmodules/raw?ref=$2" |
+            sed -e 's/https:\/\/github.com\/[^\/]*\//'$TARGET_PROTO':\/\/'$TARGET_HOST'\/'$TARGET_GROUP'\//g' |
+            base64
+    )
+    message=$(
+        curl --silent --request PUT \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --header "Content-Type: application/json" \
+            --url "$TARGET_PROTO://$TARGET_HOST/api/v4/projects/$1/repository/files/.gitmodules" \
+            --data '{
+                "branch": "'$2'", 
+                "content": "'$new_content'", 
+                "commit_message": "update .gitmodules",
+                "encoding": "base64"
+            }' | jq .message | sed -e 's/\"//g'
+    )
+    if [ "$message" != "null" ]; then
+        print_error "$message"
+    fi
+}
+
+function recursive_update() {
+    # param: gitlab repo url, specifica branch
+    source_proj=$1
+    # Todo: normalized branch name
+    branch=${2##*/}
+    source_proj_name=$(get_gitlab_proj_name $source_proj)
+    source_proj_id=$(get_gitlab_proj_id $source_proj_name)
+    if [ $source_proj_id == "null" ]; then
+        print_error "project $source_proj not exists"
+    else
+        # Recursive migrate submodules
+        get_gitlab_submodule_branch $source_proj_id $branch | while read -a tmp; do
+            submodule=${tmp[0]}
+            branch=${tmp[1]}
+            if [ -z $submodule ]; then
+                continue
+            elif [ -z $branch ]; then
+                branch="master"
+            fi
+            recursive_update $submodule $branch
+        done
+        print_log "update project:$source_proj id:$source_proj_id branch:$branch"
+        update_gitlab_submodule_url $source_proj_id $branch
+    fi
 }
 
 function offline_recursive_migrate() {
@@ -135,37 +184,28 @@ function offline_recursive_migrate() {
         offline_recursive_migrate $submodule
     done
     new_proj_name=${source_repo_name##*/}
-    test_id=$(
-        curl --silent --request GET \
-            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            --header "Content-Type: application/json" \
-            --url "$TARGET_PROTO://$TARGET_HOST/api/v4/projects/$TARGET_GROUP%2F$new_proj_name" |
-            jq .id
-    )
-    echo test_id $test_id
+    test_id=$(get_gitlab_proj_id $new_proj_name)
     if [ $test_id != "null" ]; then
         print_error "project $TARGET_URL/$new_proj_name already exists"
     else
         # Stage 1: clone repo and update .gitmodule
-        # Todo: update specifica branch
         print_log "clone $source_repo"
         git clone $source_repo ./temp && cd temp
-        if [ -f ".gitmodules" ]; then
-            cat .gitmodules |
-                sed -e 's/https:\/\/github.com\/[^\/]*\//'$TARGET_PROTO':\/\/'$TARGET_HOST'\/'$TARGET_GROUP'\//g' \
-                    >tmp && mv tmp .gitmodules
-            git add . && git commit -m 'update .gitmodules'
-        fi
         # Stage 2: push to gitlab repo
         print_log "create gitlab project $TARGET_URL/$new_proj_name"
-        curl --silent --request POST \
-            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            --header "Content-Type: application/json" \
-            --url "$TARGET_PROTO://$TARGET_HOST/api/v4/projects/" \
-            --data '{
+        message=$(
+            curl --silent --request POST \
+                --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                --header "Content-Type: application/json" \
+                --url "$TARGET_PROTO://$TARGET_HOST/api/v4/projects/" \
+                --data '{
                 "name": "'$new_proj_name'",
                 "namespace_id": "'$TARGET_GROUP_ID'"
-            }' | jq .message | grep message
+            }' | jq .message | sed -e 's/\"//g'
+        )
+        if [ "$message" != "null" ]; then
+            print_error "$message"
+        fi
         print_log "push to $TARGET_URL/$new_proj_name"
         git remote add gitlab $TARGET_URL/$new_proj_name
         git push -u gitlab --all
@@ -179,8 +219,9 @@ TARGET_GROUP="null"
 TARGET_PROTO="null"
 TARGET_HOST="null"
 TARGET_GROUP_ID="null"
+TARGET_BRANCH="master"
 
-while getopts "hfnus:t:" opt; do
+while getopts "hfnus:t:b:" opt; do
     case $opt in
     h)
         echo '
@@ -189,6 +230,7 @@ while getopts "hfnus:t:" opt; do
     -u  update .gitmodules for gitlab project and its submodules
     -s  source repo url, like "https://github.com/XXX/XXX.git"
     -t  target group url, like "http://127.0.0.1/XXX"
+    -b  specifica branch for update, default as "master"
         '
         exit 0
         ;;
@@ -207,6 +249,9 @@ while getopts "hfnus:t:" opt; do
     t)
         TARGET_URL=$OPTARG
         ;;
+    b)
+        TARGET_BRANCH=$OPTARG
+        ;;
     :)
         exit 1
         ;;
@@ -215,6 +260,10 @@ while getopts "hfnus:t:" opt; do
         ;;
     esac
 done
+
+# Todo: recursive migrate from .gitmodules branch, if each branch has different submodules
+# Todo: if master branch not named 'master'
+# Todo: warn log
 
 case $HANDLE in
 offline)
@@ -248,7 +297,10 @@ update)
         print_error "update miss target group url"
         exit 3
     fi
+    root_proj_url=$TARGET_URL
+    TARGET_URL=${root_proj_url%/*}
     get_handles
-    print_log "update .gitmodules for $TARGET_URL"
+    print_log "update .gitmodules for $root_proj_url"
+    recursive_update $root_proj_url $TARGET_BRANCH
     ;;
 esac
