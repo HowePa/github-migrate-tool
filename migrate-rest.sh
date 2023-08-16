@@ -229,7 +229,7 @@ while getopts "hfnus:t:b:" opt; do
     -n  online mode
     -u  update .gitmodules for gitlab project and its submodules
     -s  source repo url, like "https://github.com/XXX/XXX.git"
-    -t  target group url, like "http://127.0.0.1/XXX"
+    -t  target group url, like "http://127.0.0.1/XXX" for online and "http://127.0.0.1/XXX/XXX.git" for update
     -b  specifica branch for update, default as "master"
         '
         exit 0

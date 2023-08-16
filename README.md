@@ -36,6 +36,6 @@
 
     ```bash
     ./migrate-rest.sh -u \
-        -t http://<gitlab_host>/<target_group> \
+        -t http://<gitlab_host>/<target_group>/<target_proj> \
         -b <branch_name>
     ```
