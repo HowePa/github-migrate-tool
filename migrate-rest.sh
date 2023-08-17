@@ -213,6 +213,55 @@ function offline_recursive_migrate() {
     fi
 }
 
+# Todo: keep local repo for regular sync remote repo 
+function _offline_recursive_migrate() {
+    # param: github repo url
+    source_repo=$1
+    source_repo_name=$(get_github_repo_name $source_repo)
+    # # Recursive migrate submodules
+    get_github_repo_submodules $source_repo_name | while read submodule; do
+        offline_recursive_migrate $submodule
+    done
+    new_proj_name=${source_repo_name##*/}
+    test_id=$(get_gitlab_proj_id $new_proj_name)
+    if [ $test_id != "null" ]; then
+        print_error "project $TARGET_URL/$new_proj_name already exists"
+    else
+        # Stage 1: clone repo and update .gitmodule
+        print_log "clone $source_repo"
+        local_repo_name=${source_repo_name##*/}
+        git clone $source_repo && cd $local_repo_name
+        # Stage 2: push to gitlab repo
+        print_log "create gitlab project $TARGET_URL/$new_proj_name"
+        message=$(
+            curl --silent --request POST \
+                --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                --header "Content-Type: application/json" \
+                --url "$TARGET_PROTO://$TARGET_HOST/api/v4/projects/" \
+                --data '{
+                "name": "'$new_proj_name'",
+                "namespace_id": "'$TARGET_GROUP_ID'"
+            }' | jq .message | sed -e 's/\"//g'
+        )
+        if [ "$message" != "null" ]; then
+            print_error "$message"
+        fi
+        print_log "push to $TARGET_URL/$new_proj_name"
+        git remote add gitlab $TARGET_URL/$new_proj_name
+        git push gitlab --all
+        cd ..
+    fi
+}
+
+function _recursive_sync() {
+    # check update
+    git fetch origin
+    # merge update
+    git merge origin/$branch
+    # push to gitlab
+    git push gitlab --all
+}
+
 SOURCE_REPO="null"
 TARGET_URL="null"
 TARGET_GROUP="null"
