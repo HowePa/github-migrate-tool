@@ -310,6 +310,7 @@ while getopts "hfnus:t:b:" opt; do
     esac
 done
 
+# Todo: only offline. As online sync has problem with commit_sha, after update, gitlab head commit_sha was out of github repo
 # Todo: recursive migrate from .gitmodules branch, if each branch has different submodules
 # Todo: if master branch not named 'master'
 # Todo: warn log
