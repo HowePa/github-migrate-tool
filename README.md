@@ -15,27 +15,20 @@
 
 2. 创建 gitlab group 作为迁移目标，参考: https://docs.gitlab.com/ee/user/group/#create-a-group
 
-3. 迁移仓库
+3. 迁移 & 同步
 
     ```bash
-    chmod +x ./migrate-rest.sh
-    # 离线方式: 迭代地将仓库克隆到本地再上传
-    ./migrate-rest.sh -f \
-        -s https://github.com/<source_repo> \
-        -t http://<gitlab_host>/<target_group>
-
-    # 在线方式: 迭代地向 gitlab 发送 import from github 请求
-    ./migrate-rest.sh -n \
-        -s https://github.com/<source_repo> \
-        -t http://<gitlab_host>/<target_group>
-    # ... 此时可以在 gitlab 上看到仓库列表且仓库状态为 "Import in progress"
-    # ... 等待所有仓库导入成功，导入时间取决于 gitlab 服务器网络
+    chmod +x ./migrate-local.sh
+    ./migrate-local.sh \
+        -s "https://github.com/{owner}/{repo}" \
+        -t "http://127.0.0.1/{group}" \
+        -b "master"
     ```
 
-4. 更新 .gitmodules
+## Description
 
-    ```bash
-    ./migrate-rest.sh -u \
-        -t http://<gitlab_host>/<target_group>/<target_proj> \
-        -b <branch_name>
-    ```
+1. 首先，脚本会将远端的代码仓库（及submodules）仓库都克隆为本地仓库。
+2. 之后，将仓库push到gitlab服务器。
+3. 最后，迭代地修改gitlab group中各个project地submodule地址。
+
+    <mark>注意</mark>：push使用“--force”参数，会强制覆盖所有gitlab更改历史，因此gitlab project只能作为镜像仓库，无法跟踪开发。
