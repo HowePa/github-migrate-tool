@@ -57,7 +57,7 @@ function get_github_submodules() {
             --header "X-GitHub-Api-Version: 2022-11-28" |
             sed 's/\t//g' |
             awk '{FS="submodule \"| = "}{
-                if($1=="\["){printf "\n"}
+                if($1=="["){printf "\n"}
                 else if($1=="url"){printf $2}
                 else if($1=="branch"){printf " " $2}
                 } END {printf "\n"}'
@@ -76,7 +76,7 @@ function get_gitlab_submodules() {
             --url "$TAR_HOST//api/v4/projects/$proj_full_name/repository/files/.gitmodules/raw?ref=$2" |
             sed 's/\t//g' |
             awk '{FS="submodule \"| = "}{
-                if($1=="\["){printf "\n"}
+                if($1=="["){printf "\n"}
                 else if($1=="url"){printf $2}
                 else if($1=="branch"){printf " " $2}
                 } END {printf "\n"}'
