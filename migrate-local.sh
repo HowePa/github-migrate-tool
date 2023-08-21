@@ -205,12 +205,6 @@ function link_submodules() {
     fi
 }
 
-GITHUB_TOKEN="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"
-GITLAB_TOKEN="upb35F1qNmRe136W_Si7"
-SRC_URL="https://github.com/ClickHouse/arrow.git"
-TAR_URL="http://192.168.1.203:3396/migrate-test"
-BRANCH="HEAD"
-
 while getopts "s:t:b:" opt; do
     case $opt in
     h)
