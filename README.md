@@ -31,4 +31,4 @@
 2. 之后，将仓库push到gitlab服务器。
 3. 最后，迭代地修改gitlab group中各个project地submodule地址。
 
-    <mark>注意</mark>：push使用“--force”参数，会强制覆盖所有gitlab更改历史，因此gitlab project只能作为镜像仓库，无法跟踪开发。
+    **注意**：push使用“--force”参数，会强制覆盖所有gitlab更改历史，因此gitlab project只能作为镜像仓库，无法跟踪开发。
