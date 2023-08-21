@@ -256,4 +256,4 @@ src_name=$(echo $src_name | sed -e 's/\.git//g')
 echo "################## Update .gitmodules ##################"
 link_submodules $TAR_URL/$src_name $BRANCH
 
-# GITHUB_TOKEN=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 GITLAB_TOKEN=upb35F1qNmRe136W_Si7 ./migrate-local.sh -s "https://github.com/ClickHouse/arrow" -t "http://192.168.1.203:3396/migrate-test" -b "release-6.0.1"
+# Todo: reset update and then pull and push
