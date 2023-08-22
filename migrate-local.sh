@@ -124,7 +124,7 @@ function recursive_migrate() {
         # if local repo already exist, pull
         print_log "local repo already exist, pull from $src_url"
         cd $local_path
-        git pull origin $branch
+        git pull origin
     fi
 
     # push to target project
