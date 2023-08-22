@@ -126,11 +126,23 @@ function recursive_migrate() {
         cd $local_path
         git pull origin
     fi
+    
+    if [ $tar_id == "null" ]; then
+        print_log "create gitlab project $tar_url"
+        curl --silent --request POST \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --header "Content-Type: application/json" \
+            --url "$TAR_HOST/api/v4/projects/" \
+            --data '{
+            "name": "'$tar_name'",
+            "namespace_id": "'$TAR_GROUP_ID'"
+        }' &> /dev/null
+    fi
 
     # push to target project
     tar_proto=${tar_url%%://*}
     tar_host=$(echo $TAR_HOST | sed -e 's/'$tar_proto':\/\///g')
-    tar_url_with_token=$tar_proto://gitlab-ci-token:$GITLAB_TOKEN@$tar_host/$TAR_GROUP/$tar_name
+    tar_url_with_token=$tar_proto://auth2:$GITLAB_TOKEN@$tar_host/$TAR_GROUP/$tar_name.git
     cd $local_path
     git remote rm gitlab &> /dev/null
     git remote add gitlab $tar_url_with_token
