@@ -128,9 +128,13 @@ function recursive_migrate() {
     fi
 
     # push to target project
+    tar_proto=${tar_url%%://*}
+    tar_host=$(echo $TAR_HOST | sed -e 's/'$tar_proto':\/\///g')
+    tar_url_with_token=$tar_proto://gitlab-ci-token:$GITLAB_TOKEN@$tar_host/$TAR_GROUP/$tar_name
     cd $local_path
-    git remote add gitlab $tar_url
-    git push --force gitlab $branch
+    git remote rm gitlab &> /dev/null
+    git remote add gitlab $tar_url_with_token
+    git push --force gitlab --all
     cd $CWD
 }
 
