@@ -267,3 +267,4 @@ echo "################## Update .gitmodules ##################"
 link_submodules $TAR_URL/$src_name $BRANCH
 
 # Todo: reset update and then pull and push
+# Todo: add ssh auth for pull and push
