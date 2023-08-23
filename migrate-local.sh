@@ -1,54 +1,73 @@
 #!/bin/bash
 
 function print_job() {
-    # param: log message
     DATE=$(date "+%Y-%m-%d %H:%M:%S")
     echo -e "\033[34m$DATE [INFO]\033[0m $1"
 }
 
 function print_log() {
-    # param: log message
     DATE=$(date "+%Y-%m-%d %H:%M:%S")
     echo -e "\033[32m$DATE [INFO]\033[0m $1"
 }
 
 function print_error() {
-    # param: log message
     DATE=$(date "+%Y-%m-%d %H:%M:%S")
     echo -e "\033[31m$DATE [ERROR]\033[0m $1"
 }
 
-function get_github_repo_info() {
-    # input repo full name, like "ClickHouse/ClickHouse"
-    # output repo info, like "{"id": "660841205", "name": "ClickHouse"}"
-    # reference: https://docs.github.com/en/rest/repos/repos?apiVersion=2022-11-28#get-a-repository
-    echo $(
-        curl --silent --request GET \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer $GITHUB_TOKEN" \
-            --header "X-GitHub-pi-Version: 2022-11-28" \
-            --url https://api.github.com/repos/$1
-    )
-}
-
-function get_gitlab_proj_info() {
-    # input proj full name, like "migrate-test/ClickHouse"
-    # output proj info, like "{"id": "46", "name": "ClickHouse"}"
-    # reference: https://docs.gitlab.com/ee/api/projects.html#get-single-project
-    proj_full_name=$(echo $1 | sed 's/\//%2F/g')
+function _get_project() { # Input(proj_full_name) Return(proj_id)
+    norm=$(echo $1 | sed 's/\//%2F/g')
     echo $(
         curl --silent --request GET \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
             --header "Content-Type: application/json" \
-            --url "$TAR_HOST/api/v4/projects/$proj_full_name"
+            --url "$TAR_HOST/api/v4/projects/$norm" |
+            jq .id
     )
 }
 
-function get_github_submodules() {
-    # input repo full name, like "ClickHouse/ClickHouse"
-    #       branch, like "master"
-    # output submodule url list
-    # reference: https://docs.github.com/en/rest/repos/contents?apiVersion=2022-11-28#get-repository-content
+function _get_group() { # Input(group_full_name) Return(group_id)
+    norm=$(echo $1 | sed 's/\//%2F/g')
+    echo $(
+        curl --silent --request GET \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --url "$TAR_HOST/api/v4/groups/$norm" |
+            jq .id
+    )
+}
+
+function _create_project() { # Input(proj_name namespace_id) Return(proj_id)
+    echo $(
+        curl --silent --request POST \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --header "Content-Type: application/json" \
+            --url "$TAR_HOST/api/v4/projects/" \
+            --data '{
+            "name": "'$1'",
+            "namespace_id": "'$2'"
+        }' | jq .id
+    )
+}
+
+function _create_subgroup() { # Input(subgroup_name, parent_group_id) Return(subgroup_id)
+    echo $(
+        curl --silent --request POST \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --header "Content-Type: application/json" \
+            --url "$TAR_HOST/api/v4/groups/" \
+            --data '{
+            "path": "'$1'",
+            "name": "'$1'",
+            "parent_id": '$2'
+        }' | jq .id
+    )
+}
+
+function _parse_url() { # Input(url) Return(proto, host, [owner, name, group])
+    echo $(echo $1 | awk 'BEGIN{FS="://|/|.git"}{print $1" "$2" "$3" "$4" "$5}')
+}
+
+function _get_github_submodules() { # Input(repo_full_name, branch) Return([submodule_url, submodule_branch])
     echo "$(
         curl --silent --request GET \
             --url https://api.github.com/repos/$1/contents/.gitmodules?ref=$2 \
@@ -64,16 +83,51 @@ function get_github_submodules() {
     )"
 }
 
-function get_gitlab_submodules() {
-    # input repo full name, like "migrate-test/ClickHouse"
-    #       branch, like "master"
-    # output submodule url list
-    # reference: https://docs.github.com/en/rest/repos/contents?apiVersion=2022-11-28#get-repository-content
-    proj_full_name=$(echo $1 | sed 's/\//%2F/g')
+function _migrate() { # Input(src_owner, src_name, branch)
+    _path=$1
+    _name=$2
+    _branch=$3
+    ##### Recursively scan submodules #####
+    _get_github_submodules $_path/$_name $_branch | while read _sub_url _sub_branch; do
+        if [ -z $_sub_url ]; then
+            continue
+        elif [ -z $_sub_branch ]; then
+            _sub_branch=HEAD
+        fi
+        read _sub_proto _sub_host _sub_owner _sub_name <<<$(_parse_url $_sub_url)
+        _sub_branch=${_sub_branch##*/}
+        _migrate $_sub_owner $_sub_name $_sub_branch
+    done
+
+    ##### Migrate repo #####
+    # step 1: clone or pull ?
+    _local_path=$CWD/$_path/$_name
+    if [ ! -d $_local_path ]; then
+        git clone --mirror $SRC_PROTO://oauth2:$GITHUB_TOKEN@$SRC_HOST/$_path/$_name $_local_path
+    else
+        cd $_local_path && git remote update
+    fi
+
+    # step 2: create project ?
+    _proj_id=$(_get_project $TAR_GROUP/$_path/$_name)
+    if [ $_proj_id == "null" ]; then
+        _group_id=$(_get_group $TAR_GROUP/$_path)
+        if [ $_group_id == "null" ]; then
+            _group_id=$(_create_subgroup $_path $TAR_GROUP_ID)
+        fi
+        _proj_id=$(_create_project $_name $_group_id)
+    fi
+
+    # step 3: push
+    cd $_local_path && git push --mirror $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name
+}
+
+function _get_gitlab_submodules() { # Input(proj_full_name, branch) Return([submodule_url, submodule_branch])
+    norm=$(echo $1 | sed 's/\//%2F/g')
     echo "$(
         curl --silent --request GET \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            --url "$TAR_HOST//api/v4/projects/$proj_full_name/repository/files/.gitmodules/raw?ref=$2" |
+            --url "$TAR_HOST//api/v4/projects/$norm/repository/files/.gitmodules/raw?ref=$2" |
             sed 's/\t//g' |
             awk '{FS="submodule \"| = "}{
                 if($1=="["){printf "\n"}
@@ -83,148 +137,90 @@ function get_gitlab_submodules() {
     )"
 }
 
-function recursive_migrate() {
-    # input src repo url, like "https://github.com/ClickHouse/ClickHouse"
-    #       branch, like "master"
-
-    # get source informations
-    src_url=$(echo $1 | sed -e 's/\.git//g')
-    branch=$2
-    src_full_name=$(echo $src_url | sed -e 's/https*:\/\/github.com\///g')
-    src_name=${src_full_name##*/}
-    # get target informations
-    tar_name=$src_name
-    tar_full_name=$TAR_GROUP/$tar_name
-    tar_info=$(get_gitlab_proj_info $tar_full_name)
-    tar_id=$(echo $tar_info | jq .id)
-    tar_url=$TAR_HOST/$TAR_GROUP/$tar_name
-
-    # recursive migrate submodules
-    get_github_submodules $src_full_name $branch | while read -a submodule; do
-        sub_url=${submodule[0]}
-        sub_branch=${submodule[1]}
-        if [ -z $sub_url ]; then
+function _link() { # Input(tar_subgroup, tar_name, branch)
+    _path=$1
+    _name=$2
+    _branch=$3
+    ##### Recursively scan submodules #####
+    _get_gitlab_submodules $TAR_GROUP/$_path/$_name $_branch | while read _sub_url _sub_branch; do
+        if [ -z $_sub_url ]; then
             continue
-        elif [ -z $sub_branch ]; then
-            sub_branch="HEAD"
+        elif [ -z $_sub_branch ]; then
+            _sub_branch=HEAD
         fi
-        sub_branch=${sub_branch##*/}
-        recursive_migrate $sub_url $sub_branch
+        read _sub_proto _sub_host _sub_owner _sub_name <<<$(_parse_url $_sub_url)
+        _sub_branch=${_sub_branch##*/}
+        _link $_sub_owner $_sub_name $_sub_branch
     done
 
-    local_path=$CWD/$src_name
-    print_job "migrate from $local_path to $tar_url"
-    if [ ! -d $local_path ]; then
-        # if local repo not exist, clone
-        print_log "local repo not exist, clone from $src_url"
-        git clone --mirror $src_url $local_path
-    else
-        # if local repo already exist, pull
-        print_log "local repo already exist, pull from $src_url"
-        cd $local_path
-        git remote update
-    fi
-    
-    if [ $tar_id == "null" ]; then
-        print_log "create gitlab project $tar_url"
-        curl --silent --request POST \
+    ##### Link submodules #####
+    # echo $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name
+    _proj_id=$(_get_project $TAR_GROUP/$_path/$_name)
+    _status=$(
+        curl --silent -w %{http_code} -o /dev/null --request GET \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            --header "Content-Type: application/json" \
-            --url "$TAR_HOST/api/v4/projects/" \
-            --data '{
-            "name": "'$tar_name'",
-            "namespace_id": "'$TAR_GROUP_ID'"
-        }' &> /dev/null
-    fi
-
-    # push to target project
-    tar_proto=${tar_url%%://*}
-    tar_host=$(echo $TAR_HOST | sed -e 's/'$tar_proto':\/\///g')
-    tar_url_with_token=$tar_proto://auth2:$GITLAB_TOKEN@$tar_host/$TAR_GROUP/$tar_name.git
-    print_log "push to gitlab project $tar_url"
-    cd $local_path
-    git push --mirror $tar_url_with_token
-    cd $CWD
-}
-
-function link_submodules() {
-    # input tar proj url, like "http://127.0.0.1/migrate-test/ClickHouse"
-    #       branch, like "master"
-    # reference: https://docs.gitlab.com/ee/api/repository_files.html#update-existing-file-in-repository
-
-    # get target informations
-    tar_url=$(echo $1 | sed -e 's/\.git//g')
-    branch=${2##*/}
-    tar_name=${tar_url##*/}
-    tar_proto=${tar_url%%://*}
-    tar_group_url=${tar_url%/*}
-    tar_group=${tar_group_url##*/}
-    tar_host=$(echo $tar_group_url | sed -e 's/'$tar_proto':\/\///g' -e 's/\/'$tar_group'//g')
-    tar_full_name=$tar_group/$tar_name
-    tar_info=$(get_gitlab_proj_info $tar_full_name)
-    tar_id=$(echo $tar_info | jq .id)
-
-    if [ $tar_id == "null" ]; then
-        print_error "project $tar_url not exists"
-    else
-        # recursive link submodules
-        get_gitlab_submodules $tar_full_name $branch | while read -a submodule; do
-            sub_url=${submodule[0]}
-            sub_branch=${submodule[1]}
-            if [ -z $sub_url ]; then
-                continue
-            elif [ -z $sub_branch ]; then
-                sub_branch="HEAD"
-            fi
-            sub_url=$(echo $sub_url | sed -e 's/https*:\/\/github.com\/[^\/]*\//'$tar_proto':\/\/'$tar_host'\/'$tar_group'\//g')
-            sub_branch=${sub_branch##*/}
-            link_submodules $sub_url $sub_branch
-        done
-        print_job "update .gitmodules for $tar_url"
-        # build .gitmodules
-        submodule_status=$(
-            curl --silent -w %{http_code} -o /dev/null --request GET \
+            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/files/.gitmodules/raw?ref=$_branch"
+    )
+    if [ $_status == "200" ]; then
+        _new_content=$(
+            curl --silent --request GET \
                 --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                --url "$tar_proto://$tar_host/api/v4/projects/$tar_id/repository/files/.gitmodules/raw?ref=$branch"
+                --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/files/.gitmodules/raw?ref=$_branch" |
+                sed -e 's/'$SRC_PROTO':\/\/'$SRC_HOST'\//'$TAR_PROTO':\/\/'$TAR_HOST'\/'$TAR_GROUP'\//g' |
+                base64
         )
-        if [ $submodule_status != "404" ]; then
-            old_links=$(
-                curl --silent --request GET \
-                    --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                    --url "$tar_proto://$tar_host/api/v4/projects/$tar_id/repository/files/.gitmodules/raw?ref=$branch"
-            )
-            new_links=$(
-                echo "$old_links" |
-                    sed -e 's/https*:\/\/github.com\/[^\/]*\//'$tar_proto':\/\/'$tar_host'\/'$tar_group'\//g' |
-                    base64
-            )
-            # update .gitmodules
-            message=$(
-                curl --silent --request PUT \
-                    --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                    --header "Content-Type: application/json" \
-                    --url "$tar_proto://$tar_host/api/v4/projects/$tar_id/repository/files/.gitmodules" \
-                    --data '{
-                    "branch": "'$branch'",
-                    "content": "'$new_links'",
-                    "commit_message": "update .gitmodules",
+
+        echo $_name $_branch
+        _response=$(
+            curl --silent --request PUT \
+                --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                --header "Content-Type: application/json" \
+                --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/files/.gitmodules" \
+                --data '{
+                    "branch": "'$_branch'",
+                    "content": "'$_new_content'",
+                    "commit_message": "Update .gitmodules",
                     "encoding": "base64"
-                }' | jq .message | sed -e 's/\"//g'
-            )
-            print_log "update success"
-        else
-            print_log "don't have .gitmodules"
-        fi
+                }' | jq .message
+        )
     fi
 }
 
+function _visibility() { # Input(tar_subgroup, tar_name, branch, visibility)
+    _path=$1
+    _name=$2
+    _branch=$3
+    _level=$4
+    ##### Recursively scan submodules #####
+    _get_gitlab_submodules $TAR_GROUP/$_path/$_name $_branch | while read _sub_url _sub_branch; do
+        if [ -z $_sub_url ]; then
+            continue
+        elif [ -z $_sub_branch ]; then
+            _sub_branch=HEAD
+        fi
+        read _sub_proto _sub_host __tar_group _sub_owner _sub_name <<<$(_parse_url $_sub_url)
+        _sub_branch=${_sub_branch##*/}
+        _visibility $_sub_owner $_sub_name $_sub_branch $_level
+    done
+
+    ##### Change visibility #####
+    echo $TAR_GROUP/$_path/$_name
+    _proj_id=$(_get_project $TAR_GROUP/$_path/$_name)
+    curl --silent --request PUT \
+        --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+        --url "$TAR_HOST//api/v4/projects/$_proj_id" \
+        --data "visibility=$_level" | jq .id
+}
+
+CWD=$(pwd)
+BRANCH=HEAD
 while getopts "s:t:b:" opt; do
     case $opt in
     h)
         echo '
     -s  source repo url, like "https://github.com/{owner}/{repo}"
-    -t  target proj url, like "http://127.0.0.1/{group}"
-    -b  branch, like "master", default HEAD
+    -t  target group url, like "http://127.0.0.1/{group}"
+    -b  branch, specifies which branch to traverse, like "master", default "HEAD"
         '
         exit 0
         ;;
@@ -241,27 +237,21 @@ while getopts "s:t:b:" opt; do
         exit 1
         ;;
     ?)
-        exit 2
+        exit 1
         ;;
     esac
 done
 
-TAR_HOST=${TAR_URL%/*}
-TAR_GROUP=${TAR_URL##*/}
-TAR_GROUP_ID=$(
-    curl --silent --request GET \
-        --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-        --url "$TAR_HOST/api/v4/groups/$TAR_GROUP" |
-        jq .id
-)
-CWD=$(pwd)
+# Parse URL
+read SRC_PROTO SRC_HOST SRC_OWNER SRC_NAME <<<$(_parse_url $SRC_URL)
+read TAR_PROTO TAR_HOST TAR_GROUP <<<$(_parse_url $TAR_URL)
+TAR_GROUP_ID=$(_get_group $TAR_GROUP)
 
-echo "################## Migrate ##################"
-recursive_migrate $SRC_URL $BRANCH
-src_name=${SRC_URL##*/}
-src_name=$(echo $src_name | sed -e 's/\.git//g')
-echo "################## Update .gitmodules ##################"
-link_submodules $TAR_URL/$src_name $BRANCH
+# migrate
+_migrate $SRC_OWNER $SRC_NAME $BRANCH
+# link
+_link $SRC_OWNER $SRC_NAME $BRANCH
+# turn public
+# _visibility $SRC_OWNER $SRC_NAME $BRANCH public
 
-# Todo: reset update and then pull and push
-# Todo: add ssh auth for pull and push
+# Todo: parser url after link_ & visibility travel
