@@ -120,6 +120,8 @@ function recursive_migrate() {
         # if local repo not exist, clone
         print_log "local repo not exist, clone from $src_url"
         git clone $src_url $local_path
+        cd $local_path && rm -rf .git/
+        git clone --mirror $src_url .git
     else
         # if local repo already exist, pull
         print_log "local repo already exist, pull from $src_url"
