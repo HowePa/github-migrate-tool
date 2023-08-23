@@ -119,14 +119,12 @@ function recursive_migrate() {
     if [ ! -d $local_path ]; then
         # if local repo not exist, clone
         print_log "local repo not exist, clone from $src_url"
-        git clone $src_url $local_path
-        cd $local_path && rm -rf .git/
-        git clone --mirror $src_url .git
+        git clone --mirror $src_url $local_path
     else
         # if local repo already exist, pull
         print_log "local repo already exist, pull from $src_url"
         cd $local_path
-        git pull origin $branch
+        git remote update
     fi
     
     if [ $tar_id == "null" ]; then
@@ -145,10 +143,9 @@ function recursive_migrate() {
     tar_proto=${tar_url%%://*}
     tar_host=$(echo $TAR_HOST | sed -e 's/'$tar_proto':\/\///g')
     tar_url_with_token=$tar_proto://auth2:$GITLAB_TOKEN@$tar_host/$TAR_GROUP/$tar_name.git
+    print_log "push to gitlab project $tar_url"
     cd $local_path
-    git remote rm gitlab &> /dev/null
-    git remote add gitlab $tar_url_with_token
-    git push --force gitlab --all
+    git push --mirror $tar_url_with_token
     cd $CWD
 }
 
