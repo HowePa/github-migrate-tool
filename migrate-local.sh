@@ -91,9 +91,7 @@ function recursive_migrate() {
     src_url=$(echo $1 | sed -e 's/\.git//g')
     branch=$2
     src_full_name=$(echo $src_url | sed -e 's/https*:\/\/github.com\///g')
-    src_info=$(get_github_repo_info $src_full_name)
-    src_id=$(echo $src_info | jq .id)
-    src_name=$(echo $src_info | jq .name | sed 's/\"//g')
+    src_name=${src_full_name##*/}
     # get target informations
     tar_name=$src_name
     tar_full_name=$TAR_GROUP/$tar_name
