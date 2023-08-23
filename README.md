@@ -5,8 +5,8 @@
 ## Running
 
 1. 设置 Github Token 及 Gitlab Token 用于访问服务，获取方法参考:  
-    Github: https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic  
-    Gitlab: https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html#create-a-personal-access-token
+    Github(repo权限): https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-personal-access-token-classic  
+    Gitlab(api权限): https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html#create-a-personal-access-token
 
     ```bash
     export GITHUB_TOKEN="<GITHUB_TOKEN>"
