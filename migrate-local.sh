@@ -64,6 +64,29 @@ function _parse_url() { # Input(url) Return(proto, host, [owner, name, group])
     echo $(echo $1 | awk 'BEGIN{FS="://|/|.git"}{print $1" "$2" "$3" "$4" "$5}')
 }
 
+function _get_default_branch() { # Input(repo_full_name) Return(default_branch)
+    _response=$(
+        curl --silent --request GET \
+            --url https://api.github.com/repos/$1 \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header "Accept: application/vnd.github.raw+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28"
+    )
+    _branch=$(echo "$_response" | jq -r .default_branch)
+    if [ $_branch == "null" ]; then
+        _url=$(echo "$_response" | jq -r .url)
+        _branch=$(
+            curl --silent --request GET \
+                --url $_url \
+                --header "Authorization: Bearer $GITHUB_TOKEN" \
+                --header "Accept: application/vnd.github.raw+json" \
+                --header "X-GitHub-Api-Version: 2022-11-28" |
+                jq -r .default_branch
+        )
+    fi
+    echo $_branch
+}
+
 function _get_github_submodules() { # Input(repo_full_name, branch) Return([submodule_url, submodule_branch])
     echo "$(
         curl --silent --request GET \
@@ -89,7 +112,7 @@ function _migrate() { # Input(src_owner, src_name, branch)
         if [ -z $_sub_url ]; then
             continue
         elif [ -z $_sub_branch ]; then
-            _sub_branch=HEAD
+            _sub_branch=$(_get_default_branch $_path/$_name)
         fi
         read _sub_proto _sub_host _sub_owner _sub_name <<<$(_parse_url $_sub_url)
         _sub_branch=$(echo $_sub_branch | sed 's/blessed\///g')
@@ -144,7 +167,7 @@ function _get_gitmodules_content() { # Input(proj_full_name, branch)
         curl --silent --request GET \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
             --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/files/.gitmodules?ref=$2" |
-            jq .content
+            jq -r .content
     )
 }
 
@@ -153,22 +176,23 @@ function _link() { # Input(tar_subgroup, tar_name, branch)
     _name=$2
     _branch=$3
     ##### Recursively scan submodules #####
-    _get_gitlab_submodules $TAR_GROUP/$_path/$_name $_branch | while read _sub_url _sub_branch; do
+    _get_github_submodules $_path/$_name $_branch | while read _sub_url _sub_branch; do
         if [ -z $_sub_url ]; then
             continue
-        elif [ -z $_sub_branch ]; then
-            _sub_branch=HEAD
         fi
-        read _sub_proto _sub_host _sub_group _sub_subgroup _sub_name <<<$(_parse_url $_sub_url)
+        read _sub_proto _sub_host _sub_owner _sub_name <<<$(_parse_url $_sub_url)
+        if [ -z $_sub_branch ]; then
+            _sub_branch=$(_get_default_branch $_sub_owner/$_sub_name)
+        fi
         _sub_branch=$(echo $_sub_branch | sed 's/blessed\///g')
-        _link $_sub_subgroup $_sub_name $_sub_branch
+        _link $_sub_owner $_sub_name $_sub_branch
     done
 
     ##### Link submodules #####
     _content=$(_get_gitmodules_content $TAR_GROUP/$_path/$_name $_branch)
-    if [ $_content != "null" ]; then
+    if [ ! -z $_content ] && [ $_content != "null" ]; then
         _new_content=$(
-            echo $_content | sed -e 's/\"//g' | base64 -d |
+            echo $_content | base64 -d |
                 sed -e 's/'$SRC_PROTO':\/\/'$SRC_HOST'\//'$TAR_PROTO':\/\/'$TAR_HOST'\/'$TAR_GROUP'\//g' |
                 base64
         )
@@ -208,25 +232,40 @@ function _visibility() { # Input(tar_subgroup, tar_name, branch, visibility)
 
     ##### Change visibility #####
     print_log "visibility $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
+    _subgroup_id=$(_get_group $TAR_GROUP/$_path)
+    _response=$(
+        curl --silent --request PUT \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --url "$TAR_PROTO://$TAR_HOST/api/v4/groups/$_subgroup_id" \
+            --data "visibility=$_level" |
+            jq -r .visibility
+    )
     _proj_id=$(_get_project $TAR_GROUP/$_path/$_name)
     _response=$(
         curl --silent --request PUT \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
             --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id" \
-            --data "visibility=$_level"
+            --data "visibility=$_level" |
+            jq -r .visibility
     )
-    echo "$_response" >>$CWD/migrate.log
+    if [ $_response != $_level ]; then
+        print_error "lose $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
+    else
+        echo $_response >>$CWD/migrate.log
+    fi
 }
 
 CWD=$(pwd)
 BRANCH=HEAD
-while getopts "s:t:b:" opt; do
+VIS_LEVEL=public
+while getopts "s:t:b:v:" opt; do
     case $opt in
     h)
         echo '
     -s  source repo url, like "https://github.com/{owner}/{repo}"
     -t  target group url, like "http://127.0.0.1/{group}"
     -b  branch, specifies which branch to traverse, like "master", default "HEAD"
+    -v  visibility level, like "public", default "public"
         '
         exit 0
         ;;
@@ -238,6 +277,9 @@ while getopts "s:t:b:" opt; do
         ;;
     b)
         BRANCH=$OPTARG
+        ;;
+    v)
+        VIS_LEVEL=$OPTARG
         ;;
     :)
         exit 1
@@ -258,7 +300,7 @@ tar = ['$TAR_PROTO'] ['$TAR_HOST'] ['$TAR_GROUP']' | tee $CWD/migrate.log
 _migrate $SRC_OWNER $SRC_NAME $BRANCH
 ##### Link #####
 _link $SRC_OWNER $SRC_NAME $BRANCH
-##### Visibility #####
-_visibility $SRC_OWNER $SRC_NAME $BRANCH public
+##### Visibility & Verify #####
+_visibility $SRC_OWNER $SRC_NAME $BRANCH $VIS_LEVEL
 
 # Todo: all branch migrate
