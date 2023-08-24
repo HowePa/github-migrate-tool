@@ -119,7 +119,7 @@ function _migrate() { # Input(src_owner, src_name, branch)
     fi
 
     ##### Push repo #####
-    print "push $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
+    print_log "push $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
     cd $_local_path && git push --mirror $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name 2>&1 | tee -a $CWD/migrate.log
 }
 
