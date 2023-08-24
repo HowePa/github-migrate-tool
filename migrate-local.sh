@@ -95,7 +95,7 @@ function _migrate() { # Input(src_owner, src_name, branch)
             _sub_branch=HEAD
         fi
         read _sub_proto _sub_host _sub_owner _sub_name <<<$(_parse_url $_sub_url)
-        _sub_branch=${_sub_branch##*/}
+        _sub_branch=$(echo $_sub_branch | sed 's/blessed\///g')
         _migrate $_sub_owner $_sub_name $_sub_branch
     done
 
@@ -149,7 +149,7 @@ function _link() { # Input(tar_subgroup, tar_name, branch)
             _sub_branch=HEAD
         fi
         read _sub_proto _sub_host _sub_owner _sub_name <<<$(_parse_url $_sub_url)
-        _sub_branch=${_sub_branch##*/}
+        _sub_branch=$(echo $_sub_branch | sed 's/blessed\///g')
         _link $_sub_owner $_sub_name $_sub_branch
     done
 
@@ -199,7 +199,7 @@ function _visibility() { # Input(tar_subgroup, tar_name, branch, visibility)
             _sub_branch=HEAD
         fi
         read _sub_proto _sub_host __tar_group _sub_owner _sub_name <<<$(_parse_url $_sub_url)
-        _sub_branch=${_sub_branch##*/}
+        _sub_branch=$(echo $_sub_branch | sed 's/blessed\///g')
         _visibility $_sub_owner $_sub_name $_sub_branch $_level
     done
 
