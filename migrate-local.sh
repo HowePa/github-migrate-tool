@@ -3,13 +3,13 @@
 function print_log() {
     DATE=$(date "+%Y-%m-%d %H:%M:%S")
     echo -e "\033[32m$DATE [INFO]\033[0m $1"
-    echo "[$DATE] [INFO] $1" >>migrate.log
+    echo "[$DATE] [INFO] $1" >>$CWD/migrate.log
 }
 
 function print_error() {
     DATE=$(date "+%Y-%m-%d %H:%M:%S")
     echo -e "\033[31m$DATE [ERROR]\033[0m $1"
-    echo "[$DATE] [ERROR] $1" >>migrate.log
+    echo "[$DATE] [ERROR] $1" >>$CWD/migrate.log
 }
 
 function _get_project() { # Input(proj_full_name) Return(proj_id)
@@ -96,18 +96,17 @@ function _migrate() { # Input(src_owner, src_name, branch)
         _migrate $_sub_owner $_sub_name $_sub_branch
     done
 
-    ##### Migrate repo #####
-    # step 1: clone or pull ?
+    ##### Clone or Pull repo #####
     _local_path=$CWD/$_path/$_name
     if [ ! -d $_local_path ]; then
         print_log "clone $SRC_PROTO://$SRC_HOST/$_path/$_name"
-        git clone --mirror $SRC_PROTO://oauth2:$GITHUB_TOKEN@$SRC_HOST/$_path/$_name $_local_path 2>&1 | tee -a migrate.log
+        git clone --mirror $SRC_PROTO://oauth2:$GITHUB_TOKEN@$SRC_HOST/$_path/$_name $_local_path 2>&1 | tee -a $CWD/migrate.log
     else
         print_log "update $_local_path"
-        cd $_local_path && git remote update 2>&1 | tee -a migrate.log
+        cd $_local_path && git remote update 2>&1 | tee -a $CWD/migrate.log
     fi
 
-    # step 2: create project ?
+    ##### Create subgroup or project #####
     _proj_id=$(_get_project $TAR_GROUP/$_path/$_name)
     if [ $_proj_id == "null" ]; then
         _group_id=$(_get_group $TAR_GROUP/$_path)
@@ -119,9 +118,9 @@ function _migrate() { # Input(src_owner, src_name, branch)
         _proj_id=$(_create_project $_name $_group_id)
     fi
 
-    # step 3: push
+    ##### Push repo #####
     print "push $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
-    cd $_local_path && git push --mirror $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name 2>&1 | tee -a migrate.log
+    cd $_local_path && git push --mirror $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name 2>&1 | tee -a $CWD/migrate.log
 }
 
 function _get_gitlab_submodules() { # Input(proj_full_name, branch) Return([submodule_url, submodule_branch])
@@ -186,7 +185,7 @@ function _link() { # Input(tar_subgroup, tar_name, branch)
                     "encoding": "base64"
                 }'
         )
-        echo "$_response" >>migrate.log
+        echo "$_response" >>$CWD/migrate.log
     fi
 }
 
@@ -216,7 +215,7 @@ function _visibility() { # Input(tar_subgroup, tar_name, branch, visibility)
             --url "$TAR_HOST//api/v4/projects/$_proj_id" \
             --data "visibility=$_level"
     )
-    echo "$_response" >>migrate.log
+    echo "$_response" >>$CWD/migrate.log
 }
 
 CWD=$(pwd)
@@ -249,20 +248,17 @@ while getopts "s:t:b:" opt; do
     esac
 done
 
-# Parse URL
+##### Parse URL #####
 read SRC_PROTO SRC_HOST SRC_OWNER SRC_NAME <<<$(_parse_url $SRC_URL)
 read TAR_PROTO TAR_HOST TAR_GROUP <<<$(_parse_url $TAR_URL)
 TAR_GROUP_ID=$(_get_group $TAR_GROUP)
 echo 'src = ['$SRC_PROTO'] ['$SRC_HOST'] ['$SRC_OWNER'] ['$SRC_NAME']
-tar = ['$TAR_PROTO'] ['$TAR_HOST'] ['$TAR_GROUP']' | tee migrate.log
-
-# migrate
+tar = ['$TAR_PROTO'] ['$TAR_HOST'] ['$TAR_GROUP']' | tee $CWD/migrate.log
+##### Migrate #####
 _migrate $SRC_OWNER $SRC_NAME $BRANCH
-# link
+##### Link #####
 _link $SRC_OWNER $SRC_NAME $BRANCH
-# turn public
+##### Visibility #####
 _visibility $SRC_OWNER $SRC_NAME $BRANCH public
 
 # Todo: all branch migrate
-
-# _get_gitmodules_content snowball-dbms/inforefiner/snowball frank/shared-metadat
