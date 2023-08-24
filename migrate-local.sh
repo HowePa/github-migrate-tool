@@ -196,6 +196,7 @@ function _link() { # Input(tar_subgroup, tar_name, branch)
                 sed -e 's/'$SRC_PROTO':\/\/'$SRC_HOST'\//'$TAR_PROTO':\/\/'$TAR_HOST'\/'$TAR_GROUP'\//g' |
                 base64
         )
+        _new_content=$(echo $_new_content | sed 's/ //g')
         print_log "link $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules"
         _response=$(
             curl --silent --request PUT \
@@ -207,9 +208,10 @@ function _link() { # Input(tar_subgroup, tar_name, branch)
                     "content": "'$_new_content'",
                     "commit_message": "Update .gitmodules",
                     "encoding": "base64"
-                }'
+                }' | jq -r .file_path
         )
         echo "$_response" >>$CWD/migrate.log
+        echo "$_new_content" | base64 -d >>$CWD/migrate.log
     fi
 }
 
@@ -248,7 +250,7 @@ function _visibility() { # Input(tar_subgroup, tar_name, branch, visibility)
             --data "visibility=$_level" |
             jq -r .visibility
     )
-    if [ $_response != $_level ]; then
+    if [ -z $_response ] || [ $_response != $_level ]; then
         print_error "lose $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
     else
         echo $_response >>$CWD/migrate.log
@@ -303,4 +305,3 @@ _link $SRC_OWNER $SRC_NAME $BRANCH
 ##### Visibility & Verify #####
 _visibility $SRC_OWNER $SRC_NAME $BRANCH $VIS_LEVEL
 
-# Todo: all branch migrate
