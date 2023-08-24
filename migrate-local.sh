@@ -319,13 +319,13 @@ branches:
     # Todo: eliminate redundant operations
     _get_branches | while read branch; do
         BRANCH=$branch
-        print_log "===================== Migrate $BRANCH ====================="
+        print_log "===================== Migrate Branch $BRANCH ====================="
         ##### Migrate #####
         _migrate $SRC_OWNER $SRC_NAME $BRANCH
     done
     _get_branches | while read branch; do
         BRANCH=$branch
-        print_log "===================== Link $BRANCH ====================="
+        print_log "===================== Link Branch $BRANCH ====================="
         ##### Link #####
         _linkmodules $SRC_OWNER $SRC_NAME $BRANCH
         ##### Visibility & Verify #####
