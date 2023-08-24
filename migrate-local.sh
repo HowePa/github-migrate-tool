@@ -1,18 +1,15 @@
 #!/bin/bash
 
-function print_job() {
-    DATE=$(date "+%Y-%m-%d %H:%M:%S")
-    echo -e "\033[34m$DATE [INFO]\033[0m $1"
-}
-
 function print_log() {
     DATE=$(date "+%Y-%m-%d %H:%M:%S")
     echo -e "\033[32m$DATE [INFO]\033[0m $1"
+    echo "[$DATE] [INFO] $1" >>migrate.log
 }
 
 function print_error() {
     DATE=$(date "+%Y-%m-%d %H:%M:%S")
     echo -e "\033[31m$DATE [ERROR]\033[0m $1"
+    echo "[$DATE] [ERROR] $1" >>migrate.log
 }
 
 function _get_project() { # Input(proj_full_name) Return(proj_id)
@@ -103,9 +100,11 @@ function _migrate() { # Input(src_owner, src_name, branch)
     # step 1: clone or pull ?
     _local_path=$CWD/$_path/$_name
     if [ ! -d $_local_path ]; then
-        git clone --mirror $SRC_PROTO://oauth2:$GITHUB_TOKEN@$SRC_HOST/$_path/$_name $_local_path
+        print_log "clone $SRC_PROTO://$SRC_HOST/$_path/$_name"
+        git clone --mirror $SRC_PROTO://oauth2:$GITHUB_TOKEN@$SRC_HOST/$_path/$_name $_local_path 2>&1 | tee -a migrate.log
     else
-        cd $_local_path && git remote update
+        print_log "update $_local_path"
+        cd $_local_path && git remote update 2>&1 | tee -a migrate.log
     fi
 
     # step 2: create project ?
@@ -113,13 +112,16 @@ function _migrate() { # Input(src_owner, src_name, branch)
     if [ $_proj_id == "null" ]; then
         _group_id=$(_get_group $TAR_GROUP/$_path)
         if [ $_group_id == "null" ]; then
+            print_log "create subgroup $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path"
             _group_id=$(_create_subgroup $_path $TAR_GROUP_ID)
         fi
+        print_log "create proj $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
         _proj_id=$(_create_project $_name $_group_id)
     fi
 
     # step 3: push
-    cd $_local_path && git push --mirror $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name
+    print "push $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
+    cd $_local_path && git push --mirror $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name 2>&1 | tee -a migrate.log
 }
 
 function _get_gitlab_submodules() { # Input(proj_full_name, branch) Return([submodule_url, submodule_branch])
@@ -137,6 +139,16 @@ function _get_gitlab_submodules() { # Input(proj_full_name, branch) Return([subm
     )"
 }
 
+function _get_gitmodules_content() { # Input(proj_full_name, branch)
+    _proj_id=$(_get_project $1)
+    echo $(
+        curl --silent --request GET \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/files/.gitmodules?ref=$2" |
+            jq .content
+    )
+}
+
 function _link() { # Input(tar_subgroup, tar_name, branch)
     _path=$1
     _name=$2
@@ -148,41 +160,33 @@ function _link() { # Input(tar_subgroup, tar_name, branch)
         elif [ -z $_sub_branch ]; then
             _sub_branch=HEAD
         fi
-        read _sub_proto _sub_host _sub_owner _sub_name <<<$(_parse_url $_sub_url)
+        read _sub_proto _sub_host _sub_group _sub_subgroup _sub_name <<<$(_parse_url $_sub_url)
         _sub_branch=$(echo $_sub_branch | sed 's/blessed\///g')
-        _link $_sub_owner $_sub_name $_sub_branch
+        _link $_sub_subgroup $_sub_name $_sub_branch
     done
 
     ##### Link submodules #####
-    # echo $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name
-    _proj_id=$(_get_project $TAR_GROUP/$_path/$_name)
-    _status=$(
-        curl --silent -w %{http_code} -o /dev/null --request GET \
-            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/files/.gitmodules/raw?ref=$_branch"
-    )
-    if [ $_status == "200" ]; then
+    _content=$(_get_gitmodules_content $TAR_GROUP/$_path/$_name $_branch)
+    if [ $_content != "null" ]; then
         _new_content=$(
-            curl --silent --request GET \
-                --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/files/.gitmodules/raw?ref=$_branch" |
+            echo $_content | sed -e 's/\"//g' | base64 -d |
                 sed -e 's/'$SRC_PROTO':\/\/'$SRC_HOST'\//'$TAR_PROTO':\/\/'$TAR_HOST'\/'$TAR_GROUP'\//g' |
                 base64
         )
-
-        echo $_name $_branch
+        print_log "link $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules"
         _response=$(
             curl --silent --request PUT \
                 --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
                 --header "Content-Type: application/json" \
-                --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/files/.gitmodules" \
+                --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$TAR_GROUP%2F$_path%2F$_name/repository/files/.gitmodules" \
                 --data '{
                     "branch": "'$_branch'",
                     "content": "'$_new_content'",
                     "commit_message": "Update .gitmodules",
                     "encoding": "base64"
-                }' | jq .message
+                }'
         )
+        echo "$_response" >>migrate.log
     fi
 }
 
@@ -198,18 +202,21 @@ function _visibility() { # Input(tar_subgroup, tar_name, branch, visibility)
         elif [ -z $_sub_branch ]; then
             _sub_branch=HEAD
         fi
-        read _sub_proto _sub_host __tar_group _sub_owner _sub_name <<<$(_parse_url $_sub_url)
+        read _sub_proto _sub_host _sub_group _sub_subgroup _sub_name <<<$(_parse_url $_sub_url)
         _sub_branch=$(echo $_sub_branch | sed 's/blessed\///g')
-        _visibility $_sub_owner $_sub_name $_sub_branch $_level
+        _visibility $_sub_subgroup $_sub_name $_sub_branch $_level
     done
 
     ##### Change visibility #####
-    echo $TAR_GROUP/$_path/$_name
+    print_log "visibility $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
     _proj_id=$(_get_project $TAR_GROUP/$_path/$_name)
-    curl --silent --request PUT \
-        --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-        --url "$TAR_HOST//api/v4/projects/$_proj_id" \
-        --data "visibility=$_level" | jq .id
+    _response=$(
+        curl --silent --request PUT \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --url "$TAR_HOST//api/v4/projects/$_proj_id" \
+            --data "visibility=$_level"
+    )
+    echo "$_response" >>migrate.log
 }
 
 CWD=$(pwd)
@@ -246,12 +253,16 @@ done
 read SRC_PROTO SRC_HOST SRC_OWNER SRC_NAME <<<$(_parse_url $SRC_URL)
 read TAR_PROTO TAR_HOST TAR_GROUP <<<$(_parse_url $TAR_URL)
 TAR_GROUP_ID=$(_get_group $TAR_GROUP)
+echo 'src = ['$SRC_PROTO'] ['$SRC_HOST'] ['$SRC_OWNER'] ['$SRC_NAME']
+tar = ['$TAR_PROTO'] ['$TAR_HOST'] ['$TAR_GROUP']' | tee migrate.log
 
 # migrate
 _migrate $SRC_OWNER $SRC_NAME $BRANCH
 # link
 _link $SRC_OWNER $SRC_NAME $BRANCH
 # turn public
-# _visibility $SRC_OWNER $SRC_NAME $BRANCH public
+_visibility $SRC_OWNER $SRC_NAME $BRANCH public
 
-# Todo: parser url after link_ & visibility travel
+# Todo: all branch migrate
+
+# _get_gitmodules_content snowball-dbms/inforefiner/snowball frank/shared-metadat
