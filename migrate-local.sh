@@ -146,21 +146,6 @@ function _migrate() { # Input(src_owner, src_name, branch)
     cd $_local_path && git push --mirror $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name 2>&1 | tee -a $CWD/migrate.log
 }
 
-function _get_gitlab_submodules() { # Input(proj_full_name, branch) Return([submodule_url, submodule_branch])
-    norm=$(echo $1 | sed 's/\//%2F/g')
-    echo "$(
-        curl --silent --request GET \
-            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            --url "$TAR_HOST//api/v4/projects/$norm/repository/files/.gitmodules/raw?ref=$2" |
-            sed 's/\t//g' |
-            awk '{FS="submodule \"| = "}{
-                if($1=="["){printf "\n"}
-                else if($1=="url"){printf $2}
-                else if($1=="branch"){printf " " $2}
-                } END {printf "\n"}'
-    )"
-}
-
 function _get_gitmodules_content() { # Input(proj_full_name, branch)
     _proj_id=$(_get_project $1)
     echo $(
@@ -171,7 +156,7 @@ function _get_gitmodules_content() { # Input(proj_full_name, branch)
     )
 }
 
-function _link() { # Input(tar_subgroup, tar_name, branch)
+function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
     _path=$1
     _name=$2
     _branch=$3
@@ -185,7 +170,7 @@ function _link() { # Input(tar_subgroup, tar_name, branch)
             _sub_branch=$(_get_default_branch $_sub_owner/$_sub_name)
         fi
         _sub_branch=$(echo $_sub_branch | sed 's/blessed\///g')
-        _link $_sub_owner $_sub_name $_sub_branch
+        _linkmodules $_sub_owner $_sub_name $_sub_branch
     done
 
     ##### Link submodules #####
@@ -213,6 +198,21 @@ function _link() { # Input(tar_subgroup, tar_name, branch)
         echo "$_response" >>$CWD/migrate.log
         echo "$_new_content" | base64 -d >>$CWD/migrate.log
     fi
+}
+
+function _get_gitlab_submodules() { # Input(proj_full_name, branch) Return([submodule_url, submodule_branch])
+    norm=$(echo $1 | sed 's/\//%2F/g')
+    echo "$(
+        curl --silent --request GET \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --url "$TAR_HOST//api/v4/projects/$norm/repository/files/.gitmodules/raw?ref=$2" |
+            sed 's/\t//g' |
+            awk '{FS="submodule \"| = "}{
+                if($1=="["){printf "\n"}
+                else if($1=="url"){printf $2}
+                else if($1=="branch"){printf " " $2}
+                } END {printf "\n"}'
+    )"
 }
 
 function _visibility() { # Input(tar_subgroup, tar_name, branch, visibility)
@@ -257,16 +257,28 @@ function _visibility() { # Input(tar_subgroup, tar_name, branch, visibility)
     fi
 }
 
+function _get_branches() {
+    echo "$(
+        curl --silent --request GET \
+            --url https://api.github.com/repos/$SRC_OWNER/$SRC_NAME/branches \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header "Accept: application/vnd.github.raw+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" |
+            jq -r '.[] | .name'
+    )"
+}
+
 CWD=$(pwd)
-BRANCH=HEAD
+BRANCH=""
 VIS_LEVEL=public
-while getopts "s:t:b:v:" opt; do
+while getopts "hs:t:b:v:" opt; do
     case $opt in
     h)
         echo '
     -s  source repo url, like "https://github.com/{owner}/{repo}"
     -t  target group url, like "http://127.0.0.1/{group}"
     -b  branch, specifies which branch to traverse, like "master", default "HEAD"
+                if not set, migrate all branches
     -v  visibility level, like "public", default "public"
         '
         exit 0
@@ -296,12 +308,37 @@ done
 read SRC_PROTO SRC_HOST SRC_OWNER SRC_NAME <<<$(_parse_url $SRC_URL)
 read TAR_PROTO TAR_HOST TAR_GROUP <<<$(_parse_url $TAR_URL)
 TAR_GROUP_ID=$(_get_group $TAR_GROUP)
-echo 'src = ['$SRC_PROTO'] ['$SRC_HOST'] ['$SRC_OWNER'] ['$SRC_NAME']
-tar = ['$TAR_PROTO'] ['$TAR_HOST'] ['$TAR_GROUP']' | tee $CWD/migrate.log
-##### Migrate #####
-_migrate $SRC_OWNER $SRC_NAME $BRANCH
-##### Link #####
-_link $SRC_OWNER $SRC_NAME $BRANCH
-##### Visibility & Verify #####
-_visibility $SRC_OWNER $SRC_NAME $BRANCH $VIS_LEVEL
 
+if [ -z $BRANCH ]; then
+    print_log "===================== Mirror All Branches ====================="
+    echo 'src = ['$SRC_PROTO'] ['$SRC_HOST'] ['$SRC_OWNER'] ['$SRC_NAME']
+tar = ['$TAR_PROTO'] ['$TAR_HOST'] ['$TAR_GROUP']
+branches:
+'"$(_get_branches)"'' | tee $CWD/migrate.log
+    echo "$(_get_branches)" | tee $CWD/migrate.log
+    # Todo: eliminate redundant operations
+    _get_branches | while read branch; do
+        BRANCH=$branch
+        print_log "===================== Migrate $BRANCH ====================="
+        ##### Migrate #####
+        _migrate $SRC_OWNER $SRC_NAME $BRANCH
+    done
+    _get_branches | while read branch; do
+        BRANCH=$branch
+        print_log "===================== Link $BRANCH ====================="
+        ##### Link #####
+        _linkmodules $SRC_OWNER $SRC_NAME $BRANCH
+        ##### Visibility & Verify #####
+        _visibility $SRC_OWNER $SRC_NAME $BRANCH $VIS_LEVEL
+    done
+else
+    print_log "===================== Mirror Branch $BRANCH ====================="
+    echo '  src = ['$SRC_PROTO'] ['$SRC_HOST'] ['$SRC_OWNER'] ['$SRC_NAME']
+    tar = ['$TAR_PROTO'] ['$TAR_HOST'] ['$TAR_GROUP']' | tee $CWD/migrate.log
+    ##### Migrate #####
+    _migrate $SRC_OWNER $SRC_NAME $BRANCH
+    ##### Link #####
+    _linkmodules $SRC_OWNER $SRC_NAME $BRANCH
+    ##### Visibility & Verify #####
+    _visibility $SRC_OWNER $SRC_NAME $BRANCH $VIS_LEVEL
+fi
