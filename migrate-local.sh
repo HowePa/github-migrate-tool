@@ -212,7 +212,7 @@ function _visibility() { # Input(tar_subgroup, tar_name, branch, visibility)
     _response=$(
         curl --silent --request PUT \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            --url "$TAR_HOST//api/v4/projects/$_proj_id" \
+            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id" \
             --data "visibility=$_level"
     )
     echo "$_response" >>$CWD/migrate.log
