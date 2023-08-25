@@ -65,7 +65,7 @@ function _parse_url() { # Input(url) Return(proto, host, [owner, name, group])
     echo "$(echo "$1" | awk 'BEGIN{FS="://|/|.git"}{print $1" "$2" "$3" "$4" "$5}')"
 }
 
-function _get_default_branch() { # Input(repo_full_name) Return(default_branch)
+function _get_github_default_branch() { # Input(repo_full_name) Return(default_branch)
     _response=$(
         curl --silent --request GET \
             --url https://api.github.com/repos/$1 \
@@ -110,14 +110,14 @@ function _migrate() { # Input(src_owner, src_name, branch)
     _branch=$3
     ##### Recursively scan submodules #####
     _get_github_submodules $_path/$_name $_branch | while read _sub_url _sub_branch; do
-        if [ -z "$_sub_url" ]; then
-            continue
-        elif [ -z "$_sub_branch" ]; then
-            _sub_branch=$(_get_default_branch $_path/$_name)
+        if [ ! -z "$_sub_url" ]; then
+            read _sub_proto _sub_host _sub_owner _sub_name <<<$(_parse_url "$_sub_url")
+            if [ -z "$_sub_branch" ]; then
+                _sub_branch=$(_get_github_default_branch $_sub_owner/$_sub_name)
+            fi
+            _sub_branch=$(echo "$_sub_branch" | sed 's/blessed\///g')
+            _migrate $_sub_owner $_sub_name $_sub_branch
         fi
-        read _sub_proto _sub_host _sub_owner _sub_name <<<$(_parse_url "$_sub_url")
-        _sub_branch=$(echo "$_sub_branch" | sed 's/blessed\///g')
-        _migrate $_sub_owner $_sub_name $_sub_branch
     done
 
     ##### Clone or Pull repo #####
@@ -149,8 +149,8 @@ function _migrate() { # Input(src_owner, src_name, branch)
     _has_lfs=$(echo "$(git lfs ls-files)" | sed -e 's/ //g')
     if [ ! -z "$_has_lfs" ]; then
         echo "$CWD/$_path/$_name" >>$CWD/lfs.log
-        git lfs fetch --all 2>&1 | tee -a $CWD/migrate.log &&
-            git lfs push --all $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name 2>&1 | tee -a $CWD/migrate.log
+        # git lfs fetch --all 2>&1 | tee -a $CWD/migrate.log &&
+        #     git lfs push --all $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name 2>&1 | tee -a $CWD/migrate.log
     else
         git push --mirror $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name 2>&1 | tee -a $CWD/migrate.log
     fi
@@ -172,15 +172,14 @@ function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
     _branch=$3
     ##### Recursively scan submodules #####
     _get_github_submodules $_path/$_name $_branch | while read _sub_url _sub_branch; do
-        if [ -z "$_sub_url" ]; then
-            continue
+        if [ ! -z "$_sub_url" ]; then
+            read _sub_proto _sub_host _sub_owner _sub_name <<<$(_parse_url $_sub_url)
+            if [ -z "$_sub_branch" ]; then
+                _sub_branch=$(_get_github_default_branch $_sub_owner/$_sub_name)
+            fi
+            _sub_branch=$(echo "$_sub_branch" | sed 's/blessed\///g')
+            _linkmodules $_sub_owner $_sub_name $_sub_branch
         fi
-        read _sub_proto _sub_host _sub_owner _sub_name <<<$(_parse_url $_sub_url)
-        if [ -z "$_sub_branch" ]; then
-            _sub_branch=$(_get_default_branch $_sub_owner/$_sub_name)
-        fi
-        _sub_branch=$(echo "$_sub_branch" | sed 's/blessed\///g')
-        _linkmodules $_sub_owner $_sub_name $_sub_branch
     done
 
     ##### Link submodules #####
@@ -226,6 +225,17 @@ function _get_gitlab_submodules() { # Input(proj_full_name, branch) Return([subm
     )"
 }
 
+function _get_gitlab_default_branch() { # Input(repo_full_name) Return(default_branch)
+    _proj_id=$(_get_project $1)
+    echo "$(
+        curl --silent --request GET \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --header "Content-Type: application/json" \
+            --url "http://192.168.1.203:3396/api/v4/projects/$_proj_id" |
+            jq -r .default_branch
+    )"
+}
+
 function _visibility() { # Input(tar_subgroup, tar_name, branch, visibility)
     _path=$1
     _name=$2
@@ -233,14 +243,14 @@ function _visibility() { # Input(tar_subgroup, tar_name, branch, visibility)
     _level=$4
     ##### Recursively scan submodules #####
     _get_gitlab_submodules $TAR_GROUP/$_path/$_name $_branch | while read _sub_url _sub_branch; do
-        if [ -z "$_sub_url" ]; then
-            continue
-        elif [ -z "$_sub_branch" ]; then
-            _sub_branch=HEAD # Todo: get default branch
+        if [ ! -z "$_sub_url" ]; then
+            read _sub_proto _sub_host _sub_group _sub_subgroup _sub_name <<<$(_parse_url $_sub_url)
+            if [ -z "$_sub_branch" ]; then
+                _sub_branch=_get_gitlab_default_branch $_sub_group/$_sub_subgroup/$_sub_name
+            fi
+            _sub_branch=$(echo "$_sub_branch" | sed -e 's/blessed\///g')
+            _visibility $_sub_subgroup $_sub_name $_sub_branch $_level
         fi
-        read _sub_proto _sub_host _sub_group _sub_subgroup _sub_name <<<$(_parse_url $_sub_url)
-        _sub_branch=$(echo "$_sub_branch" | sed -e 's/blessed\///g')
-        _visibility $_sub_subgroup $_sub_name $_sub_branch $_level
     done
 
     ##### Change visibility #####
@@ -257,7 +267,7 @@ function _visibility() { # Input(tar_subgroup, tar_name, branch, visibility)
             --data "visibility=$_level" |
             jq -r .visibility
     )
-    if [ "$_response" != "$_level" ]; then
+    if [ "$_response" == "$_level" ]; then
         print_log "visibility $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
     else
         print_error "visibility $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
@@ -322,7 +332,6 @@ if [ -z "$BRANCH" ]; then
 tar = ['$TAR_PROTO'] ['$TAR_HOST'] ['$TAR_GROUP']
 branches:
 '"$(_get_branches)"'' | tee $CWD/migrate.log
-    echo "$(_get_branches)" | tee $CWD/migrate.log
     # Todo: eliminate redundant operations
     _get_branches | while read branch; do
         BRANCH=$branch
