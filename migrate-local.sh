@@ -12,8 +12,12 @@ function print_error() {
     echo "[$DATE] [ERROR] $1" >>$CWD/migrate.log
 }
 
+function _parse_url() { # Input(url) Return(proto, host, [owner, name, group])
+    echo "$(echo "$1" | awk 'BEGIN{FS="://|/|.git"}{print $1" "$2" "$3" "$4" "$5}')"
+}
+
 function _get_project() { # Input(proj_full_name) Return(proj_id)
-    norm=$(echo "$1" | sed 's/\//%2F/g')
+    norm=$(echo "$1" | sed -e 's/\//%2F/g')
     echo "$(
         curl --silent --request GET \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
@@ -24,7 +28,7 @@ function _get_project() { # Input(proj_full_name) Return(proj_id)
 }
 
 function _get_group() { # Input(group_full_name) Return(group_id)
-    norm=$(echo "$1" | sed 's/\//%2F/g')
+    norm=$(echo "$1" | sed -e 's/\//%2F/g')
     echo "$(
         curl --silent --request GET \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
@@ -42,7 +46,8 @@ function _create_project() { # Input(proj_name namespace_id) Return(proj_id)
             --data '{
             "name": "'$1'",
             "namespace_id": "'$2'",
-            "lfs_enabled": "true"
+            "lfs_enabled": "true",
+            "visibility": "'$VIS_LEVEL'"
         }' | jq .id
     )"
 }
@@ -56,52 +61,93 @@ function _create_subgroup() { # Input(subgroup_name, parent_group_id) Return(sub
             --data '{
             "path": "'$1'",
             "name": "'$1'",
-            "parent_id": '$2'
+            "parent_id": '$2',
+            "visibility": "'$VIS_LEVEL'"
         }' | jq .id
     )"
-}
-
-function _parse_url() { # Input(url) Return(proto, host, [owner, name, group])
-    echo "$(echo "$1" | awk 'BEGIN{FS="://|/|.git"}{print $1" "$2" "$3" "$4" "$5}')"
 }
 
 function _get_github_default_branch() { # Input(repo_full_name) Return(default_branch)
     _response=$(
         curl --silent --request GET \
-            --url https://api.github.com/repos/$1 \
             --header "Authorization: Bearer $GITHUB_TOKEN" \
             --header "Accept: application/vnd.github.raw+json" \
-            --header "X-GitHub-Api-Version: 2022-11-28"
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --url https://api.github.com/repos/$1
     )
     _branch=$(echo "$_response" | jq -r .default_branch)
     if [ "$_branch" == "null" ]; then
+        # archived repo
         _url=$(echo "$_response" | jq -r .url)
         _branch=$(
             curl --silent --request GET \
-                --url $_url \
                 --header "Authorization: Bearer $GITHUB_TOKEN" \
                 --header "Accept: application/vnd.github.raw+json" \
-                --header "X-GitHub-Api-Version: 2022-11-28" |
+                --header "X-GitHub-Api-Version: 2022-11-28" \
+                --url $_url |
                 jq -r .default_branch
         )
     fi
     echo "$_branch"
 }
 
+function _get_github_branches() {
+    echo "$(
+        curl --silent --request GET \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header "Accept: application/vnd.github.raw+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --url https://api.github.com/repos/$SRC_OWNER/$SRC_NAME/branches |
+            jq -r '.[] | .name'
+    )"
+}
+
 function _get_github_submodules() { # Input(repo_full_name, branch) Return([submodule_url, submodule_branch])
     echo "$(
         curl --silent --request GET \
-            --url https://api.github.com/repos/$1/contents/.gitmodules?ref=$2 \
             --header "Authorization: Bearer $GITHUB_TOKEN" \
             --header "Accept: application/vnd.github.raw+json" \
-            --header "X-GitHub-Api-Version: 2022-11-28" |
-            sed 's/\t//g' |
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --url https://api.github.com/repos/$1/contents/.gitmodules?ref=$2 |
+            sed -e 's/\t//g' |
             awk '{FS="submodule \"| = "}{
                 if($1=="["){printf "\n"}
                 else if($1=="url"){printf $2}
                 else if($1=="branch"){printf " " $2}
                 } END {printf "\n"}'
     )"
+}
+
+function _need_update() { # Input(repo_full_name, branch, commit_sha) Return(bool)
+    _remote_sha=$(
+        curl --silent --request GET \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header "Accept: application/vnd.github.raw+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --url https://api.github.com/repos/$1/branches/$2 |
+            jq -r '.commit | .sha'
+    )
+    if [ "$_remote_sha" == "$3" ]; then
+        echo "false"
+    else
+        echo "true"
+    fi
+}
+
+function _need_push() { # Input(proj_full_name, branch, commit_sha) Return(bool)
+    _proj_id=$(_get_project $1)
+    _remote_sha=$(
+        curl --silent --request GET \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --header "Content-Type: application/json" \
+            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/branches/$2" |
+            jq -r '.commit | .id'
+    )
+    if [ "$_remote_sha" == "$3" ]; then
+        echo "false"
+    else
+        echo "true"
+    fi
 }
 
 function _migrate() { # Input(src_owner, src_name, branch)
@@ -115,23 +161,13 @@ function _migrate() { # Input(src_owner, src_name, branch)
             if [ -z "$_sub_branch" ]; then
                 _sub_branch=$(_get_github_default_branch $_sub_owner/$_sub_name)
             fi
-            _sub_branch=$(echo "$_sub_branch" | sed 's/blessed\///g')
+            _sub_branch=$(echo "$_sub_branch" | sed -e 's/blessed\///g')
             _migrate $_sub_owner $_sub_name $_sub_branch
         fi
     done
 
-    ##### Clone or Pull repo #####
     _local_path=$CWD/$_path/$_name
-    if [ ! -d "$_local_path" ]; then
-        print_log "clone $SRC_PROTO://$SRC_HOST/$_path/$_name"
-        git clone --mirror $SRC_PROTO://oauth2:$GITHUB_TOKEN@$SRC_HOST/$_path/$_name $_local_path 2>&1 | tee -a $CWD/migrate.log
-    else
-        print_log "update $_local_path"
-        cd $_local_path &&
-            git remote update 2>&1 | tee -a $CWD/migrate.log
-    fi
-
-    ##### Create subgroup or project #####
+    ##### Create Proj ####
     _proj_id=$(_get_project $TAR_GROUP/$_path/$_name)
     if [ "$_proj_id" == "null" ]; then
         _group_id=$(_get_group $TAR_GROUP/$_path)
@@ -142,17 +178,44 @@ function _migrate() { # Input(src_owner, src_name, branch)
         print_log "create proj $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
         _proj_id=$(_create_project $_name $_group_id)
     fi
-
-    ##### Push repo #####
-    print_log "push $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
-    cd $_local_path
-    _has_lfs=$(echo "$(git lfs ls-files)" | sed -e 's/ //g')
-    if [ ! -z "$_has_lfs" ]; then
-        echo "$CWD/$_path/$_name" >>$CWD/lfs.log
-        # git lfs fetch --all 2>&1 | tee -a $CWD/migrate.log &&
-        #     git lfs push --all $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name 2>&1 | tee -a $CWD/migrate.log
-    else
+    if [ ! -d "$_local_path" ]; then
+        ##### Clone Repo #####
+        print_log "clone $SRC_PROTO://$SRC_HOST/$_path/$_name"
+        git clone --mirror $SRC_PROTO://oauth2:$GITHUB_TOKEN@$SRC_HOST/$_path/$_name $_local_path 2>&1 | tee -a $CWD/migrate.log
+        ##### Push All #####
+        cd $_local_path
+        _has_lfs="$(git lfs ls-files)"
+        if [ ! -z "$_has_lfs" ]; then
+            git lfs fetch --all $SRC_PROTO://oauth2:$GITHUB_TOKEN@$SRC_HOST/$_path/$_name 2>&1 | tee -a $CWD/migrate.log &&
+                git lfs push --all $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name 2>&1 | tee -a $CWD/migrate.log
+        fi
         git push --mirror $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name 2>&1 | tee -a $CWD/migrate.log
+        cd $CWD
+    else
+        ##### Pull #####
+        cd $_local_path
+        _local_commit_sha=$(git rev-parse $_branch)
+        _update_flag=$(_need_update $_path/$_name $_branch $_local_commit_sha)
+        if [ "$_update_flag" == "true" ]; then
+            print_log "update $_local_path $_branch"
+            git remote update 2>&1 | tee -a $CWD/migrate.log
+        else
+            print_log "$_local_path $_branch is the latest version"
+        fi
+        ##### Push Branch #####
+        _push_flag=$(_need_push $TAR_GROUP/$_path/$_name $_branch $_local_commit_sha)
+        if [ "$_push_flag" == "true" ]; then
+            print_log "push $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
+            _has_lfs="$(git lfs ls-files)"
+            if [ ! -z "$_has_lfs" ]; then
+                git lfs fetch $SRC_PROTO://oauth2:$GITHUB_TOKEN@$SRC_HOST/$_path/$_name $_branch 2>&1 | tee -a $CWD/migrate.log &&
+                    git lfs push $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name $branch 2>&1 | tee -a $CWD/migrate.log
+            fi
+            git push --force $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name $_branch 2>&1 | tee -a $CWD/migrate.log
+        else
+            print_log "$TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name $_branch is the latest version"
+        fi
+        cd $CWD
     fi
 }
 
@@ -177,7 +240,7 @@ function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
             if [ -z "$_sub_branch" ]; then
                 _sub_branch=$(_get_github_default_branch $_sub_owner/$_sub_name)
             fi
-            _sub_branch=$(echo "$_sub_branch" | sed 's/blessed\///g')
+            _sub_branch=$(echo "$_sub_branch" | sed -e 's/blessed\///g')
             _linkmodules $_sub_owner $_sub_name $_sub_branch
         fi
     done
@@ -189,7 +252,7 @@ function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
             echo "$_content" | base64 -d |
                 sed -e 's/'$SRC_PROTO':\/\/'$SRC_HOST'\//'$TAR_PROTO':\/\/'$TAR_HOST'\/'$TAR_GROUP'\//g' |
                 base64
-        )" | sed 's/ //g')
+        )" | sed -e 's/ //g')
         _response=$(
             curl --silent --request PUT \
                 --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
@@ -210,21 +273,6 @@ function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
     fi
 }
 
-function _get_gitlab_submodules() { # Input(proj_full_name, branch) Return([submodule_url, submodule_branch])
-    norm=$(echo "$1" | sed 's/\//%2F/g')
-    echo "$(
-        curl --silent --request GET \
-            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            --url "$TAR_HOST//api/v4/projects/$norm/repository/files/.gitmodules/raw?ref=$2" |
-            sed 's/\t//g' |
-            awk '{FS="submodule \"| = "}{
-                if($1=="["){printf "\n"}
-                else if($1=="url"){printf $2}
-                else if($1=="branch"){printf " " $2}
-                } END {printf "\n"}'
-    )"
-}
-
 function _get_gitlab_default_branch() { # Input(repo_full_name) Return(default_branch)
     _proj_id=$(_get_project $1)
     echo "$(
@@ -236,11 +284,25 @@ function _get_gitlab_default_branch() { # Input(repo_full_name) Return(default_b
     )"
 }
 
-function _visibility() { # Input(tar_subgroup, tar_name, branch, visibility)
+function _get_gitlab_submodules() { # Input(proj_full_name, branch) Return([submodule_url, submodule_branch])
+    norm=$(echo "$1" | sed -e 's/\//%2F/g')
+    echo "$(
+        curl --silent --request GET \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --url "$TAR_HOST//api/v4/projects/$norm/repository/files/.gitmodules/raw?ref=$2" |
+            sed -e 's/\t//g' |
+            awk '{FS="submodule \"| = "}{
+                if($1=="["){printf "\n"}
+                else if($1=="url"){printf $2}
+                else if($1=="branch"){printf " " $2}
+                } END {printf "\n"}'
+    )"
+}
+
+function _verify() { # Input(tar_subgroup, tar_name, branch)
     _path=$1
     _name=$2
     _branch=$3
-    _level=$4
     ##### Recursively scan submodules #####
     _get_gitlab_submodules $TAR_GROUP/$_path/$_name $_branch | while read _sub_url _sub_branch; do
         if [ ! -z "$_sub_url" ]; then
@@ -249,40 +311,17 @@ function _visibility() { # Input(tar_subgroup, tar_name, branch, visibility)
                 _sub_branch=_get_gitlab_default_branch $_sub_group/$_sub_subgroup/$_sub_name
             fi
             _sub_branch=$(echo "$_sub_branch" | sed -e 's/blessed\///g')
-            _visibility $_sub_subgroup $_sub_name $_sub_branch $_level
+            _verify $_sub_subgroup $_sub_name $_sub_branch $_level
         fi
     done
 
-    ##### Change visibility #####
-    _subgroup_id=$(_get_group $TAR_GROUP/$_path)
-    curl --silent --request PUT \
-        --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-        --url "$TAR_PROTO://$TAR_HOST/api/v4/groups/$_subgroup_id" \
-        --data "visibility=$_level" &>/dev/null
+    ##### Verify #####
     _proj_id=$(_get_project $TAR_GROUP/$_path/$_name)
-    _response=$(
-        curl --silent --request PUT \
-            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id" \
-            --data "visibility=$_level" |
-            jq -r .visibility
-    )
-    if [ "$_response" == "$_level" ]; then
-        print_log "visibility $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
+    if [ "$_proj_id" == "null" ]; then
+        print_error "lose proj $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name $_branch"
     else
-        print_error "visibility $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
+        print_log "verify $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name $_branch"
     fi
-}
-
-function _get_branches() {
-    echo "$(
-        curl --silent --request GET \
-            --url https://api.github.com/repos/$SRC_OWNER/$SRC_NAME/branches \
-            --header "Authorization: Bearer $GITHUB_TOKEN" \
-            --header "Accept: application/vnd.github.raw+json" \
-            --header "X-GitHub-Api-Version: 2022-11-28" |
-            jq -r '.[] | .name'
-    )"
 }
 
 CWD=$(pwd)
@@ -331,21 +370,19 @@ if [ -z "$BRANCH" ]; then
     echo 'src = ['$SRC_PROTO'] ['$SRC_HOST'] ['$SRC_OWNER'] ['$SRC_NAME']
 tar = ['$TAR_PROTO'] ['$TAR_HOST'] ['$TAR_GROUP']
 branches:
-'"$(_get_branches)"'' | tee $CWD/migrate.log
-    # Todo: eliminate redundant operations
-    _get_branches | while read branch; do
+'"$(_get_github_branches)"'' | tee $CWD/migrate.log
+    _get_github_branches | while read branch; do
         BRANCH=$branch
-        print_log "===================== Migrate Branch $BRANCH ====================="
+        print_log "===================== Migrate & Link Branch $BRANCH ====================="
         ##### Migrate #####
-        _migrate $SRC_OWNER $SRC_NAME $BRANCH
-    done
-    _get_branches | while read branch; do
-        BRANCH=$branch
-        print_log "===================== Link Branch $BRANCH ====================="
+        _migrate $SRC_OWNER $SRC_NAME $Branch
         ##### Link #####
         _linkmodules $SRC_OWNER $SRC_NAME $BRANCH
-        ##### Visibility & Verify #####
-        _visibility $SRC_OWNER $SRC_NAME $BRANCH $VIS_LEVEL
+    done
+    _get_github_branches | while read branch; do
+        BRANCH=$branch
+        print_log "===================== Verify Branch $BRANCH ====================="
+        _verify $SRC_OWNER $SRC_NAME $BRANCH
     done
 else
     print_log "===================== Mirror Branch $BRANCH ====================="
@@ -355,12 +392,8 @@ else
     _migrate $SRC_OWNER $SRC_NAME $BRANCH
     ##### Link #####
     _linkmodules $SRC_OWNER $SRC_NAME $BRANCH
-    ##### Visibility & Verify #####
-    _visibility $SRC_OWNER $SRC_NAME $BRANCH $VIS_LEVEL
+    ##### Verify #####
+    _verify $SRC_OWNER $SRC_NAME $BRANCH
 fi
 
-# Todo: 支持lfs、支持检测更新
-# Todo: 排除重复link
-# Todo: response 用双引号扩起来
-# Todo: Simple breakpoint continuation
-# Todo: Check update
+# Todo: 断点续传
