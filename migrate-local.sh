@@ -343,7 +343,7 @@ function _verify() { # Input(tar_subgroup, tar_name, branch)
         if [ ! -z "$_sub_url" ]; then
             read _sub_proto _sub_host _sub_group _sub_subgroup _sub_name <<<$(_parse_url $_sub_url)
             if [ -z "$_sub_branch" ]; then
-                _sub_branch=_get_gitlab_default_branch $_sub_group/$_sub_subgroup/$_sub_name
+                _sub_branch=$(_get_gitlab_default_branch $_sub_group/$_sub_subgroup/$_sub_name)
             fi
             _sub_branch=$(echo "$_sub_branch" | sed -e 's/blessed\///g')
             _verify $_sub_subgroup $_sub_name $_sub_branch $_level
@@ -353,9 +353,9 @@ function _verify() { # Input(tar_subgroup, tar_name, branch)
     ##### Verify #####
     _proj_id=$(_get_project $TAR_GROUP/$_path/$_name)
     if [ "$_proj_id" == "null" ]; then
-        print_error "lose proj $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name $_branch"
+        print_error "lose proj $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name <$_branch>"
     else
-        print_log "verify $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name $_branch"
+        print_log "verify $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name <$_branch>"
     fi
 }
 
