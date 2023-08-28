@@ -191,7 +191,7 @@ function _migrate() { # Input(src_owner, src_name, branch)
         if [ ! -z "$_sub_url" ]; then
             read _sub_proto _sub_host _sub_owner _sub_name <<<$(_parse_url "$_sub_url")
             if [ -z "$_sub_branch" ]; then
-            # Todo: check branch or tag ?
+                # Todo: check branch or tag ?
                 _sub_branch=$(_get_github_default_branch $_sub_owner/$_sub_name)
             fi
             _sub_branch=$(echo "$_sub_branch" | sed -e 's/blessed\///g')
@@ -223,6 +223,15 @@ function _migrate() { # Input(src_owner, src_name, branch)
                 git lfs push --all $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name 2>&1 | tee -a $CWD/migrate.log
         fi
         git push --mirror $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name 2>&1 | tee -a $CWD/migrate.log
+        ##### Set Default Branch #####
+        _default_branch=$(_get_github_default_branch $_path/$_name)
+        _response=$(
+            curl --silent --request PUT \
+                --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id" \
+                --data "default_branch=$_default_branch"
+        )
+        print_log "set $TAR_GROUP/$_path/$_name <default_branch=$_default_branch>"
         cd $CWD
     else
         ##### Pull #####
@@ -412,13 +421,13 @@ branches:
         ##### Migrate #####
         _migrate $SRC_OWNER $SRC_NAME $BRANCH
         ##### Link #####
-        _linkmodules $SRC_OWNER $SRC_NAME $BRANCH
+        # _linkmodules $SRC_OWNER $SRC_NAME $BRANCH
     done
-    _get_github_branches | while read branch; do
-        BRANCH=$branch
-        print_log "===================== Verify Branch $BRANCH ====================="
-        _verify $SRC_OWNER $SRC_NAME $BRANCH
-    done
+    # _get_github_branches | while read branch; do
+    #     BRANCH=$branch
+    #     print_log "===================== Verify Branch $BRANCH ====================="
+    #     _verify $SRC_OWNER $SRC_NAME $BRANCH
+    # done
 else
     print_log "===================== Mirror Branch $BRANCH ====================="
     echo '  src = ['$SRC_PROTO'] ['$SRC_HOST'] ['$SRC_OWNER'] ['$SRC_NAME']
