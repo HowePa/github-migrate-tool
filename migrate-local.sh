@@ -92,15 +92,17 @@ function _get_github_default_branch() { # Input(repo_full_name) Return(default_b
 }
 
 function _get_github_branches() { # Return(branches)
+    _page_idx=1
+    _url="https://api.github.com/repos/$SRC_OWNER/$SRC_NAME/branches"
     _response=$(
         curl --silent --request GET \
             --header "Authorization: Bearer $GITHUB_TOKEN" \
             --header "Accept: application/vnd.github.raw+json" \
             --header "X-GitHub-Api-Version: 2022-11-28" \
-            --url https://api.github.com/repos/$SRC_OWNER/$SRC_NAME/branches
+            --url $_url?page=$_page_idx
     )
-    _branches=$(echo "$_response" | jq -r '.[] | .name')
-    if [ "_branches" == "null" ]; then
+    _next_branches=$(echo "$_response" | jq -r '.[] | .name')
+    if [ "_next_branches" == "null" ]; then
         # archived repo
         _url=$(echo "$_response" | jq -r .url)
         _remote_sha=$(
@@ -108,10 +110,23 @@ function _get_github_branches() { # Return(branches)
                 --header "Authorization: Bearer $GITHUB_TOKEN" \
                 --header "Accept: application/vnd.github.raw+json" \
                 --header "X-GitHub-Api-Version: 2022-11-28" \
-                --url $_url |
+                --url $_url?page=$_page_idx |
                 jq -r '.[] | .name'
         )
     fi
+    _branches="$_next_branches"
+    while [ ! -z "$_next_branches" ]; do
+        _page_idx=$(expr $_page_idx + 1)
+        _next_branches=$(
+            curl --silent --request GET \
+                --header "Authorization: Bearer $GITHUB_TOKEN" \
+                --header "Accept: application/vnd.github.raw+json" \
+                --header "X-GitHub-Api-Version: 2022-11-28" \
+                --url $_url?page=$_page_idx |
+                jq -r '.[] | .name'
+        )
+        _branches=$(echo -e "$_branches\n$_next_branches")
+    done
     echo "$_branches"
 }
 
@@ -166,16 +181,18 @@ function _need_update() { # Input(repo_full_name, branch, commit_sha) Return(boo
     if [ "$_remote_sha" == "null" ]; then
         # archived repo
         _url=$(echo "$_response" | jq -r .url)
-        _remote_sha=$(
-            curl --silent --request GET \
-                --header "Authorization: Bearer $GITHUB_TOKEN" \
-                --header "Accept: application/vnd.github.raw+json" \
-                --header "X-GitHub-Api-Version: 2022-11-28" \
-                --url $_url |
-                jq -r '.commit | .sha'
-        )
+        if [ "$_url" == "null" ]; then
+            _remote_sha=$(
+                curl --silent --request GET \
+                    --header "Authorization: Bearer $GITHUB_TOKEN" \
+                    --header "Accept: application/vnd.github.raw+json" \
+                    --header "X-GitHub-Api-Version: 2022-11-28" \
+                    --url $_url |
+                    jq -r '.commit | .sha'
+            )
+        fi
     fi
-    if [ "$_remote_sha" == "$3" ]; then
+    if [ "$_remote_sha" == "$3" ] || [ "$_remote_sha" == "null" ]; then
         echo "false"
     else
         echo "true"
@@ -242,15 +259,13 @@ function _migrate() { # Input(src_owner, src_name, branch)
             print_log "update $_local_path <$_branch>"
             git remote update 2>&1 | tee -a $CWD/migrate.log
             ##### Push Branch #####
-            if [ "$_push_flag" == "true" ]; then
-                print_log "push $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name <$_branch>"
-                _has_lfs="$(git lfs ls-files)"
-                if [ ! -z "$_has_lfs" ]; then
-                    git lfs fetch $SRC_PROTO://oauth2:$GITHUB_TOKEN@$SRC_HOST/$_path/$_name $_branch 2>&1 | tee -a $CWD/migrate.log &&
-                        git lfs push $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name $branch 2>&1 | tee -a $CWD/migrate.log
-                fi
-                git push --force $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name $_branch 2>&1 | tee -a $CWD/migrate.log
+            print_log "push $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name <$_branch>"
+            _has_lfs="$(git lfs ls-files)"
+            if [ ! -z "$_has_lfs" ]; then
+                git lfs fetch $SRC_PROTO://oauth2:$GITHUB_TOKEN@$SRC_HOST/$_path/$_name $_branch 2>&1 | tee -a $CWD/migrate.log &&
+                    git lfs push $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name $branch 2>&1 | tee -a $CWD/migrate.log
             fi
+            git push --force $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name $_branch 2>&1 | tee -a $CWD/migrate.log
         else
             print_log "$_local_path <$_branch> is the latest version"
         fi
@@ -421,13 +436,13 @@ branches:
         ##### Migrate #####
         _migrate $SRC_OWNER $SRC_NAME $BRANCH
         ##### Link #####
-        # _linkmodules $SRC_OWNER $SRC_NAME $BRANCH
+        _linkmodules $SRC_OWNER $SRC_NAME $BRANCH
     done
-    # _get_github_branches | while read branch; do
-    #     BRANCH=$branch
-    #     print_log "===================== Verify Branch $BRANCH ====================="
-    #     _verify $SRC_OWNER $SRC_NAME $BRANCH
-    # done
+    _get_github_branches | while read branch; do
+        BRANCH=$branch
+        print_log "===================== Verify Branch $BRANCH ====================="
+        _verify $SRC_OWNER $SRC_NAME $BRANCH
+    done
 else
     print_log "===================== Mirror Branch $BRANCH ====================="
     echo '  src = ['$SRC_PROTO'] ['$SRC_HOST'] ['$SRC_OWNER'] ['$SRC_NAME']
