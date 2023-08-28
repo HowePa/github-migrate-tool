@@ -283,22 +283,27 @@ function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
                 sed -e 's/'$SRC_PROTO':\/\/'$SRC_HOST'\//'$TAR_PROTO':\/\/'$TAR_HOST'\/'$TAR_GROUP'\//g' |
                 base64
         ) | sed -e 's/ //g')
-        _response=$(
-            curl --silent --request PUT \
-                --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                --header "Content-Type: application/json" \
-                --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$TAR_GROUP%2F$_path%2F$_name/repository/files/.gitmodules" \
-                --data '{
-                    "branch": "'$_branch'",
-                    "content": "'$_new_content'",
-                    "commit_message": "Update .gitmodules",
-                    "encoding": "base64"
-                }' | jq -r .file_path
-        )
-        if [ "$_response" == ".gitmodules" ]; then
-            print_log "link $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules"
+        _content=$(echo $_content | sed -e 's/ //g')
+        if [ "$_content" != "$_new_content" ]; then
+            _response=$(
+                curl --silent --request PUT \
+                    --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                    --header "Content-Type: application/json" \
+                    --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$TAR_GROUP%2F$_path%2F$_name/repository/files/.gitmodules" \
+                    --data '{
+                        "branch": "'$_branch'",
+                        "content": "'$_new_content'",
+                        "commit_message": "Update .gitmodules",
+                        "encoding": "base64"
+                    }' | jq -r .file_path
+            )
+            if [ "$_response" == ".gitmodules" ]; then
+                print_log "link $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules"
+            else
+                print_error "link $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules [$_response]"
+            fi
         else
-            print_error "link $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules [$_response]"
+            print_log "$TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules already linked"
         fi
     fi
 }
