@@ -19,7 +19,7 @@ function _parse_url() { # Input(url) Return(proto, host, [owner, name, group])
 function _get_project() { # Input(proj_full_name) Return(proj_id)
     norm=$(echo "$1" | sed -e 's/\//%2F/g')
     echo "$(
-        curl --silent --request GET \
+        curl --silent --location --request GET \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
             --header "Content-Type: application/json" \
             --url "$TAR_HOST/api/v4/projects/$norm" |
@@ -30,7 +30,7 @@ function _get_project() { # Input(proj_full_name) Return(proj_id)
 function _get_group() { # Input(group_full_name) Return(group_id)
     norm=$(echo "$1" | sed -e 's/\//%2F/g')
     echo "$(
-        curl --silent --request GET \
+        curl --silent --location --request GET \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
             --url "$TAR_HOST/api/v4/groups/$norm" |
             jq .id
@@ -39,7 +39,7 @@ function _get_group() { # Input(group_full_name) Return(group_id)
 
 function _create_project() { # Input(proj_name namespace_id) Return(proj_id)
     echo "$(
-        curl --silent --request POST \
+        curl --silent --location --request POST \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
             --header "Content-Type: application/json" \
             --url "$TAR_HOST/api/v4/projects/" \
@@ -54,7 +54,7 @@ function _create_project() { # Input(proj_name namespace_id) Return(proj_id)
 
 function _create_subgroup() { # Input(subgroup_name, parent_group_id) Return(subgroup_id)
     echo "$(
-        curl --silent --request POST \
+        curl --silent --location --request POST \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
             --header "Content-Type: application/json" \
             --url "$TAR_HOST/api/v4/groups/" \
@@ -68,98 +68,43 @@ function _create_subgroup() { # Input(subgroup_name, parent_group_id) Return(sub
 }
 
 function _get_github_default_branch() { # Input(repo_full_name) Return(default_branch)
-    _response=$(
-        curl --silent --request GET \
+    _branch=$(
+        curl --silent --location --request GET \
             --header "Authorization: Bearer $GITHUB_TOKEN" \
             --header "Accept: application/vnd.github.raw+json" \
             --header "X-GitHub-Api-Version: 2022-11-28" \
-            --url https://api.github.com/repos/$1
+            --url https://api.github.com/repos/$1 |
+            jq -r .default_branch
     )
-    _branch=$(echo "$_response" | jq -r .default_branch)
-    if [ "$_branch" == "null" ]; then
-        # archived repo
-        _url=$(echo "$_response" | jq -r .url)
-        _branch=$(
-            curl --silent --request GET \
-                --header "Authorization: Bearer $GITHUB_TOKEN" \
-                --header "Accept: application/vnd.github.raw+json" \
-                --header "X-GitHub-Api-Version: 2022-11-28" \
-                --url $_url |
-                jq -r .default_branch
-        )
-    fi
     echo "$_branch"
 }
 
 function _get_github_branches() { # Return(branches)
-    _page_idx=1
-    _url="https://api.github.com/repos/$SRC_OWNER/$SRC_NAME/branches"
-    _response=$(
-        curl --silent --request GET \
-            --header "Authorization: Bearer $GITHUB_TOKEN" \
-            --header "Accept: application/vnd.github.raw+json" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            --url $_url?page=$_page_idx
-    )
-    _next_branches=$(echo "$_response" | jq -r '.[] | .name')
-    if [ "_next_branches" == "null" ]; then
-        # archived repo
-        _url=$(echo "$_response" | jq -r .url)
-        _remote_sha=$(
-            curl --silent --request GET \
-                --header "Authorization: Bearer $GITHUB_TOKEN" \
-                --header "Accept: application/vnd.github.raw+json" \
-                --header "X-GitHub-Api-Version: 2022-11-28" \
-                --url $_url?page=$_page_idx |
-                jq -r '.[] | .name'
-        )
-    fi
-    _branches="$_next_branches"
+    _page_idx=0
+    _branches=""
+    _next_branches="HEAD"
     while [ ! -z "$_next_branches" ]; do
         _page_idx=$(expr $_page_idx + 1)
         _next_branches=$(
-            curl --silent --request GET \
+            curl --silent --location --request GET \
                 --header "Authorization: Bearer $GITHUB_TOKEN" \
                 --header "Accept: application/vnd.github.raw+json" \
                 --header "X-GitHub-Api-Version: 2022-11-28" \
-                --url $_url?page=$_page_idx |
+                --url https://api.github.com/repos/$SRC_OWNER/$SRC_NAME/branches?page=$_page_idx |
                 jq -r '.[] | .name'
         )
         _branches=$(echo -e "$_branches\n$_next_branches")
     done
-    echo "$_branches"
+    echo "$(sed '1d' <<<"$_branches")"
 }
 
 function _get_github_submodules() { # Input(repo_full_name, branch) Return([submodule_url, submodule_branch])
-    _response=$(
-        curl --silent --request GET \
-            --header "Authorization: Bearer $GITHUB_TOKEN" \
-            --header "Accept: application/vnd.github+json" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            --url https://api.github.com/repos/$1/contents/.gitmodules?ref=$2
-    )
-    _content=$(echo "$_response" | jq .content)
-    if [ "$_content" == null ]; then
-        # archived repo
-        _url=$(echo "$_response" | jq -r .url)
-        _content=$(
-            curl --silent --request GET \
-                --header "Authorization: Bearer $GITHUB_TOKEN" \
-                --header "Accept: application/vnd.github.raw+json" \
-                --header "X-GitHub-Api-Version: 2022-11-28" \
-                --url $_url
-        )
-    else
-        _content=$(
-            curl --silent --request GET \
-                --header "Authorization: Bearer $GITHUB_TOKEN" \
-                --header "Accept: application/vnd.github.raw+json" \
-                --header "X-GitHub-Api-Version: 2022-11-28" \
-                --url https://api.github.com/repos/$1/contents/.gitmodules?ref=$2
-        )
-    fi
     echo "$(
-        echo "$_content" |
+        curl --silent --location --request GET \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header "Accept: application/vnd.github.raw+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --url https://api.github.com/repos/$1/contents/.gitmodules?ref=$2 |
             sed -e 's/\t//g' |
             awk '{FS="submodule \"| = "}{
                 if($1=="["){printf "\n"}
@@ -170,28 +115,14 @@ function _get_github_submodules() { # Input(repo_full_name, branch) Return([subm
 }
 
 function _need_update() { # Input(repo_full_name, branch, commit_sha) Return(bool)
-    _response=$(
-        curl --silent --request GET \
+    _remote_sha=$(
+        curl --silent --location --request GET \
             --header "Authorization: Bearer $GITHUB_TOKEN" \
             --header "Accept: application/vnd.github.raw+json" \
             --header "X-GitHub-Api-Version: 2022-11-28" \
-            --url https://api.github.com/repos/$1/branches/$2
+            --url https://api.github.com/repos/$1/branches/$2 |
+            jq -r '.commit | .sha'
     )
-    _remote_sha=$(echo "$_response" | jq -r '.commit | .sha')
-    if [ "$_remote_sha" == "null" ]; then
-        # archived repo
-        _url=$(echo "$_response" | jq -r .url)
-        if [ "$_url" == "null" ]; then
-            _remote_sha=$(
-                curl --silent --request GET \
-                    --header "Authorization: Bearer $GITHUB_TOKEN" \
-                    --header "Accept: application/vnd.github.raw+json" \
-                    --header "X-GitHub-Api-Version: 2022-11-28" \
-                    --url $_url |
-                    jq -r '.commit | .sha'
-            )
-        fi
-    fi
     if [ "$_remote_sha" == "$3" ] || [ "$_remote_sha" == "null" ]; then
         echo "false"
     else
@@ -243,7 +174,7 @@ function _migrate() { # Input(src_owner, src_name, branch)
         ##### Set Default Branch #####
         _default_branch=$(_get_github_default_branch $_path/$_name)
         _response=$(
-            curl --silent --request PUT \
+            curl --silent --location --request PUT \
                 --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
                 --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id" \
                 --data "default_branch=$_default_branch"
@@ -276,7 +207,7 @@ function _migrate() { # Input(src_owner, src_name, branch)
 function _get_gitmodules_content() { # Input(proj_full_name, branch)
     _proj_id=$(_get_project $1)
     echo "$(
-        curl --silent --request GET \
+        curl --silent --location --request GET \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
             --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/files/.gitmodules?ref=$2" |
             jq -r .content
@@ -310,7 +241,7 @@ function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
         _content=$(echo $_content | sed -e 's/ //g')
         if [ "$_content" != "$_new_content" ]; then
             _response=$(
-                curl --silent --request PUT \
+                curl --silent --location --request PUT \
                     --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
                     --header "Content-Type: application/json" \
                     --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$TAR_GROUP%2F$_path%2F$_name/repository/files/.gitmodules" \
@@ -335,7 +266,7 @@ function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
 function _get_gitlab_default_branch() { # Input(repo_full_name) Return(default_branch)
     _proj_id=$(_get_project $1)
     echo "$(
-        curl --silent --request GET \
+        curl --silent --location --request GET \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
             --header "Content-Type: application/json" \
             --url "http://192.168.1.203:3396/api/v4/projects/$_proj_id" |
@@ -346,7 +277,7 @@ function _get_gitlab_default_branch() { # Input(repo_full_name) Return(default_b
 function _get_gitlab_submodules() { # Input(proj_full_name, branch) Return([submodule_url, submodule_branch])
     norm=$(echo "$1" | sed -e 's/\//%2F/g')
     echo "$(
-        curl --silent --request GET \
+        curl --silent --location --request GET \
             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
             --url "$TAR_HOST//api/v4/projects/$norm/repository/files/.gitmodules/raw?ref=$2" |
             sed -e 's/\t//g' |
@@ -426,11 +357,12 @@ TAR_GROUP_ID=$(_get_group $TAR_GROUP)
 
 if [ -z "$BRANCH" ]; then
     print_log "===================== Mirror All Branches ====================="
+    _branches=$(_get_github_branches)
     echo 'src = ['$SRC_PROTO'] ['$SRC_HOST'] ['$SRC_OWNER'] ['$SRC_NAME']
 tar = ['$TAR_PROTO'] ['$TAR_HOST'] ['$TAR_GROUP']
 branches:
-'"$(_get_github_branches)"'' | tee $CWD/migrate.log
-    _get_github_branches | while read branch; do
+'"$_branches"'' | tee $CWD/migrate.log
+    echo "$_branches" | while read branch; do
         BRANCH=$branch
         print_log "===================== Migrate & Link Branch $BRANCH ====================="
         ##### Migrate #####
@@ -438,7 +370,7 @@ branches:
         ##### Link #####
         _linkmodules $SRC_OWNER $SRC_NAME $BRANCH
     done
-    _get_github_branches | while read branch; do
+    echo "$_branches" | while read branch; do
         BRANCH=$branch
         print_log "===================== Verify Branch $BRANCH ====================="
         _verify $SRC_OWNER $SRC_NAME $BRANCH
