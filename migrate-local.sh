@@ -91,24 +91,60 @@ function _get_github_default_branch() { # Input(repo_full_name) Return(default_b
     echo "$_branch"
 }
 
-function _get_github_branches() {
-    echo "$(
+function _get_github_branches() { # Return(branches)
+    _response=$(
         curl --silent --request GET \
             --header "Authorization: Bearer $GITHUB_TOKEN" \
             --header "Accept: application/vnd.github.raw+json" \
             --header "X-GitHub-Api-Version: 2022-11-28" \
-            --url https://api.github.com/repos/$SRC_OWNER/$SRC_NAME/branches |
-            jq -r '.[] | .name'
-    )"
+            --url https://api.github.com/repos/$SRC_OWNER/$SRC_NAME/branches
+    )
+    _branches=$(echo "$_response" | jq -r '.[] | .name')
+    if [ "_branches" == "null" ]; then
+        # archived repo
+        _url=$(echo "$_response" | jq -r .url)
+        _remote_sha=$(
+            curl --silent --request GET \
+                --header "Authorization: Bearer $GITHUB_TOKEN" \
+                --header "Accept: application/vnd.github.raw+json" \
+                --header "X-GitHub-Api-Version: 2022-11-28" \
+                --url $_url |
+                jq -r '.[] | .name'
+        )
+    fi
+    echo "$_branches"
 }
 
 function _get_github_submodules() { # Input(repo_full_name, branch) Return([submodule_url, submodule_branch])
-    echo "$(
+    _response=$(
         curl --silent --request GET \
             --header "Authorization: Bearer $GITHUB_TOKEN" \
-            --header "Accept: application/vnd.github.raw+json" \
+            --header "Accept: application/vnd.github+json" \
             --header "X-GitHub-Api-Version: 2022-11-28" \
-            --url https://api.github.com/repos/$1/contents/.gitmodules?ref=$2 |
+            --url https://api.github.com/repos/$1/contents/.gitmodules?ref=$2
+    )
+    _content=$(echo "$_response" | jq .content)
+    if [ "$_content" == null ]; then
+        # archived repo
+        _url=$(echo "$_response" | jq -r .url)
+        _content=$(
+            curl --silent --request GET \
+                --header "Authorization: Bearer $GITHUB_TOKEN" \
+                --header "Accept: application/vnd.github.raw+json" \
+                --header "X-GitHub-Api-Version: 2022-11-28" \
+                --url $_url
+        )
+    else
+        _content=$(
+            curl --silent --request GET \
+                --header "Authorization: Bearer $GITHUB_TOKEN" \
+                --header "Accept: application/vnd.github.raw+json" \
+                --header "X-GitHub-Api-Version: 2022-11-28" \
+                --url https://api.github.com/repos/$1/contents/.gitmodules?ref=$2
+        )
+    fi
+    echo "$(
+        echo "$_content" |
             sed -e 's/\t//g' |
             awk '{FS="submodule \"| = "}{
                 if($1=="["){printf "\n"}
@@ -119,30 +155,26 @@ function _get_github_submodules() { # Input(repo_full_name, branch) Return([subm
 }
 
 function _need_update() { # Input(repo_full_name, branch, commit_sha) Return(bool)
-    _remote_sha=$(
+    _response=$(
         curl --silent --request GET \
             --header "Authorization: Bearer $GITHUB_TOKEN" \
             --header "Accept: application/vnd.github.raw+json" \
             --header "X-GitHub-Api-Version: 2022-11-28" \
-            --url https://api.github.com/repos/$1/branches/$2 |
-            jq -r '.commit | .sha'
+            --url https://api.github.com/repos/$1/branches/$2
     )
-    if [ "$_remote_sha" == "$3" ]; then
-        echo "false"
-    else
-        echo "true"
+    _remote_sha=$(echo "$_response" | jq -r '.commit | .sha')
+    if [ "$_remote_sha" == "null" ]; then
+        # archived repo
+        _url=$(echo "$_response" | jq -r .url)
+        _remote_sha=$(
+            curl --silent --request GET \
+                --header "Authorization: Bearer $GITHUB_TOKEN" \
+                --header "Accept: application/vnd.github.raw+json" \
+                --header "X-GitHub-Api-Version: 2022-11-28" \
+                --url $_url |
+                jq -r '.commit | .sha'
+        )
     fi
-}
-
-function _need_push() { # Input(proj_full_name, branch, commit_sha) Return(bool)
-    _proj_id=$(_get_project $1)
-    _remote_sha=$(
-        curl --silent --request GET \
-            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            --header "Content-Type: application/json" \
-            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/branches/$2" |
-            jq -r '.commit | .id'
-    )
     if [ "$_remote_sha" == "$3" ]; then
         echo "false"
     else
@@ -197,23 +229,20 @@ function _migrate() { # Input(src_owner, src_name, branch)
         _local_commit_sha=$(git rev-parse $_branch)
         _update_flag=$(_need_update $_path/$_name $_branch $_local_commit_sha)
         if [ "$_update_flag" == "true" ]; then
-            print_log "update $_local_path $_branch"
+            print_log "update $_local_path <$_branch>"
             git remote update 2>&1 | tee -a $CWD/migrate.log
-        else
-            print_log "$_local_path $_branch is the latest version"
-        fi
-        ##### Push Branch #####
-        _push_flag=$(_need_push $TAR_GROUP/$_path/$_name $_branch $_local_commit_sha)
-        if [ "$_push_flag" == "true" ]; then
-            print_log "push $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name"
-            _has_lfs="$(git lfs ls-files)"
-            if [ ! -z "$_has_lfs" ]; then
-                git lfs fetch $SRC_PROTO://oauth2:$GITHUB_TOKEN@$SRC_HOST/$_path/$_name $_branch 2>&1 | tee -a $CWD/migrate.log &&
-                    git lfs push $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name $branch 2>&1 | tee -a $CWD/migrate.log
+            ##### Push Branch #####
+            if [ "$_push_flag" == "true" ]; then
+                print_log "push $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name <$_branch>"
+                _has_lfs="$(git lfs ls-files)"
+                if [ ! -z "$_has_lfs" ]; then
+                    git lfs fetch $SRC_PROTO://oauth2:$GITHUB_TOKEN@$SRC_HOST/$_path/$_name $_branch 2>&1 | tee -a $CWD/migrate.log &&
+                        git lfs push $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name $branch 2>&1 | tee -a $CWD/migrate.log
+                fi
+                git push --force $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name $_branch 2>&1 | tee -a $CWD/migrate.log
             fi
-            git push --force $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name $_branch 2>&1 | tee -a $CWD/migrate.log
         else
-            print_log "$TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name $_branch is the latest version"
+            print_log "$_local_path <$_branch> is the latest version"
         fi
         cd $CWD
     fi
@@ -268,7 +297,7 @@ function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
         if [ "$_response" == ".gitmodules" ]; then
             print_log "link $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules"
         else
-            print_error "link $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules"
+            print_error "link $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules [$_response]"
         fi
     fi
 }
@@ -375,7 +404,7 @@ branches:
         BRANCH=$branch
         print_log "===================== Migrate & Link Branch $BRANCH ====================="
         ##### Migrate #####
-        _migrate $SRC_OWNER $SRC_NAME $Branch
+        _migrate $SRC_OWNER $SRC_NAME $BRANCH
         ##### Link #####
         _linkmodules $SRC_OWNER $SRC_NAME $BRANCH
     done
@@ -395,5 +424,3 @@ else
     ##### Verify #####
     _verify $SRC_OWNER $SRC_NAME $BRANCH
 fi
-
-# Todo: 断点续传
