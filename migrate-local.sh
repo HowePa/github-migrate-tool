@@ -191,6 +191,7 @@ function _migrate() { # Input(src_owner, src_name, branch)
         if [ ! -z "$_sub_url" ]; then
             read _sub_proto _sub_host _sub_owner _sub_name <<<$(_parse_url "$_sub_url")
             if [ -z "$_sub_branch" ]; then
+            # Todo: check branch or tag ?
                 _sub_branch=$(_get_github_default_branch $_sub_owner/$_sub_name)
             fi
             _sub_branch=$(echo "$_sub_branch" | sed -e 's/blessed\///g')
@@ -277,11 +278,11 @@ function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
     ##### Link submodules #####
     _content=$(_get_gitmodules_content $TAR_GROUP/$_path/$_name $_branch)
     if [ ! -z "$_content" ] && [ "$_content" != "null" ]; then
-        _new_content=$(echo "$(
+        _new_content=$(echo $(
             echo "$_content" | base64 -d |
                 sed -e 's/'$SRC_PROTO':\/\/'$SRC_HOST'\//'$TAR_PROTO':\/\/'$TAR_HOST'\/'$TAR_GROUP'\//g' |
                 base64
-        )" | sed -e 's/ //g')
+        ) | sed -e 's/ //g')
         _response=$(
             curl --silent --request PUT \
                 --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
