@@ -139,7 +139,6 @@ function _migrate() { # Input(src_owner, src_name, branch)
         if [ ! -z "$_sub_url" ]; then
             read _sub_proto _sub_host _sub_owner _sub_name <<<$(_parse_url "$_sub_url")
             if [ -z "$_sub_branch" ]; then
-                # Todo: check branch or tag ?
                 _sub_branch=$(_get_github_default_branch $_sub_owner/$_sub_name)
             fi
             _sub_branch=$(echo "$_sub_branch" | sed -e 's/blessed\///g')
@@ -214,6 +213,22 @@ function _get_gitmodules_content() { # Input(proj_full_name, branch)
     )"
 }
 
+function _get_gitlab_submodules() { # Input(proj_full_name, branch) Return([submodule_path, submodule_url, submodule_branch])
+    norm=$(echo "$1" | sed -e 's/\//%2F/g')
+    echo "$(
+        curl --silent --location --request GET \
+            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            --url "$TAR_HOST//api/v4/projects/$norm/repository/files/.gitmodules/raw?ref=$2" |
+            sed -e 's/\t//g' -e 's/ //g' |
+            awk '{ORS=" "}{FS="\"|="}{
+                if($1=="[submodule"){print "\n"}
+                else if($1=="path"){print $2}
+                else if($1=="url"){print $2}
+                else if($1=="branch"){print $2}
+                } END {printf "\n"}'
+    )"
+}
+
 function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
     _path=$1
     _name=$2
@@ -240,6 +255,7 @@ function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
         ) | sed -e 's/ //g')
         _content=$(echo $_content | sed -e 's/ //g')
         if [ "$_content" != "$_new_content" ]; then
+            ##### Update .gitmodules #####
             _response=$(
                 curl --silent --location --request PUT \
                     --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
@@ -253,9 +269,9 @@ function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
                     }' | jq -r .file_path
             )
             if [ "$_response" == ".gitmodules" ]; then
-                print_log "link $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules"
+                print_log "update $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules"
             else
-                print_error "link $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules [$_response]"
+                print_error "update $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules [$_response]"
             fi
         else
             print_log "$TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules already linked"
@@ -274,27 +290,12 @@ function _get_gitlab_default_branch() { # Input(repo_full_name) Return(default_b
     )"
 }
 
-function _get_gitlab_submodules() { # Input(proj_full_name, branch) Return([submodule_url, submodule_branch])
-    norm=$(echo "$1" | sed -e 's/\//%2F/g')
-    echo "$(
-        curl --silent --location --request GET \
-            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            --url "$TAR_HOST//api/v4/projects/$norm/repository/files/.gitmodules/raw?ref=$2" |
-            sed -e 's/\t//g' |
-            awk '{FS="submodule \"| = "}{
-                if($1=="["){printf "\n"}
-                else if($1=="url"){printf $2}
-                else if($1=="branch"){printf " " $2}
-                } END {printf "\n"}'
-    )"
-}
-
 function _verify() { # Input(tar_subgroup, tar_name, branch)
     _path=$1
     _name=$2
     _branch=$3
     ##### Recursively scan submodules #####
-    _get_gitlab_submodules $TAR_GROUP/$_path/$_name $_branch | while read _sub_url _sub_branch; do
+    _get_gitlab_submodules $TAR_GROUP/$_path/$_name $_branch | while read _sub_path _sub_url _sub_branch; do
         if [ ! -z "$_sub_url" ]; then
             read _sub_proto _sub_host _sub_group _sub_subgroup _sub_name <<<$(_parse_url $_sub_url)
             if [ -z "$_sub_branch" ]; then

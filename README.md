@@ -41,6 +41,12 @@
         -t "http://127.0.0.1/{group}"
     ```
 
+4. 从 GitLab 克隆项目，注意要使用 `--remote` 参数
+
+    ```bash
+    git clone --recursive --remote -b ${branch} ${proj_url}
+    ```
+
 ## Description
 
 以 https://github.com/{owner}/{repo}.git 为例，脚本执行结果如下:
