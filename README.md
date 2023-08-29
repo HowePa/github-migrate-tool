@@ -54,6 +54,8 @@
 2. 在指定的 GitLab Group 中创建 subgroup {owner}
 3. 在 {owner} 中创建 project {repo}
 
+注意：迁移脚本会移除 .gitmodules 中的 "blessed/" 分支前缀
+
 <p align="center">
     <img src="migrate.png">
 </p>
