@@ -250,7 +250,7 @@ function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
     if [ ! -z "$_content" ] && [ "$_content" != "null" ]; then
         _new_content=$(echo $(
             echo "$_content" | base64 -d |
-                sed -e 's/'$SRC_PROTO':\/\/'$SRC_HOST'\//'$TAR_PROTO':\/\/'$TAR_HOST'\/'$TAR_GROUP'\//g' |
+                sed -e 's/'$SRC_PROTO':\/\/'$SRC_HOST'\//'$TAR_PROTO':\/\/'$TAR_HOST'\/'$TAR_GROUP'\//g' -e 's/blessed\///g' |
                 base64
         ) | sed -e 's/ //g')
         _content=$(echo $_content | sed -e 's/ //g')
