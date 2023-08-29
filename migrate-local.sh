@@ -278,35 +278,22 @@ function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
                         _sub_branch=$(_get_gitlab_default_branch $_sub_group/$_sub_subgroup/$_sub_name)
                     fi
                     _sub_branch=$(echo "$_sub_branch" | sed -e 's/blessed\///g')
-                    _proj_id=$(_get_project $TAR_GROUP/$_path/$_name)
                     ##### get head commit_sha #####
-                    _submodule_path=$(echo "$_sub_path" | sed -e 's/\//%2F/g')
-                    _submodule_origin_commit_sha=$(
+                    _sub_proj_id=$(_get_project $TAR_GROUP/$_sub_subgroup/$_sub_name)
+                    _sub_commit_sha=$(
                         curl --silent --location --request GET \
                             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/files/$_submodule_path?ref=$_branch" |
-                            jq -r .blob_id
-                    )
-                    _submodule_proj_id=$(_get_project $TAR_GROUP/$_sub_subgroup/$_sub_name)
-                    _submodule_commit_sha=$(
-                        curl --silent --location --request GET \
-                            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_submodule_proj_id/repository/commits?ref=$_sub_branch" |
-                            jq -r '.[] | .id' | grep -v $_submodule_origin_commit_sha -m 1
+                            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_sub_proj_id/repository/branches/$_sub_branch" |
+                            jq -r '.commit | .id'
                     )
                     ##### update submodules #####
+                    _proj_id=$(_get_project $TAR_GROUP/$_path/$_name)
+                    _submodule_path=$(echo "$_sub_path" | sed -e 's/\//%2F/g')
                     _response=$(
                         curl --silent --location --request PUT \
                             --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
                             --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/submodules/$_submodule_path" \
-                            --data "branch=$_branch&commit_sha=$_submodule_commit_sha" |
-                            jq -r .message
-                    )
-                    _response=$(
-                        curl --silent --location --request PUT \
-                            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-                            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/submodules/$_submodule_path" \
-                            --data "branch=$_branch&commit_sha=$_submodule_origin_commit_sha" |
+                            --data "branch=$_branch&commit_sha=$_sub_commit_sha" |
                             jq -r .message
                     )
                     print_log " -> $TAR_GROUP/$_sub_subgroup/$_sub_name [$_response]"
