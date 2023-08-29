@@ -268,6 +268,50 @@ function _linkmodules() { # Input(tar_subgroup, tar_name, branch)
             else
                 print_error "update $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules [$_response]"
             fi
+
+            ##### Update .git/config #####
+            print_log "update submodules for $TAR_GROUP/$_path/$_name"
+            _get_gitlab_submodules $TAR_GROUP/$_path/$_name $_branch | while read _sub_path _sub_url _sub_branch; do
+                if [ ! -z "$_sub_url" ]; then
+                    read _sub_proto _sub_host _sub_group _sub_subgroup _sub_name <<<$(_parse_url $_sub_url)
+                    if [ -z "$_sub_branch" ]; then
+                        _sub_branch=$(_get_gitlab_default_branch $_sub_group/$_sub_subgroup/$_sub_name)
+                    fi
+                    _sub_branch=$(echo "$_sub_branch" | sed -e 's/blessed\///g')
+                    _proj_id=$(_get_project $TAR_GROUP/$_path/$_name)
+                    ##### get head commit_sha #####
+                    _submodule_path=$(echo "$_sub_path" | sed -e 's/\//%2F/g')
+                    _submodule_origin_commit_sha=$(
+                        curl --silent --location --request GET \
+                            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/files/$_submodule_path?ref=$_branch" |
+                            jq -r .blob_id
+                    )
+                    _submodule_proj_id=$(_get_project $TAR_GROUP/$_sub_subgroup/$_sub_name)
+                    _submodule_commit_sha=$(
+                        curl --silent --location --request GET \
+                            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_submodule_proj_id/repository/commits?ref=$_sub_branch" |
+                            jq -r '.[] | .id' | grep -v $_submodule_origin_commit_sha -m 1
+                    )
+                    ##### update submodules #####
+                    _response=$(
+                        curl --silent --location --request PUT \
+                            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/submodules/$_submodule_path" \
+                            --data "branch=$_branch&commit_sha=$_submodule_commit_sha" |
+                            jq -r .message
+                    )
+                    _response=$(
+                        curl --silent --location --request PUT \
+                            --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+                            --url "$TAR_PROTO://$TAR_HOST/api/v4/projects/$_proj_id/repository/submodules/$_submodule_path" \
+                            --data "branch=$_branch&commit_sha=$_submodule_origin_commit_sha" |
+                            jq -r .message
+                    )
+                    print_log " -> $TAR_GROUP/$_sub_subgroup/$_sub_name [$_response]"
+                fi
+            done
         else
             print_log "$TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name/-/blob/$_branch/.gitmodules already linked"
         fi
