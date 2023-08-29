@@ -190,11 +190,6 @@ function _migrate() { # Input(src_owner, src_name, branch)
             git remote update 2>&1 | tee -a $CWD/migrate.log
             ##### Push Branch #####
             print_log "push $TAR_PROTO://$TAR_HOST/$TAR_GROUP/$_path/$_name <$_branch>"
-            _has_lfs="$(git lfs ls-files)"
-            if [ ! -z "$_has_lfs" ]; then
-                git lfs fetch $SRC_PROTO://oauth2:$GITHUB_TOKEN@$SRC_HOST/$_path/$_name $_branch 2>&1 | tee -a $CWD/migrate.log &&
-                    git lfs push $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name $branch 2>&1 | tee -a $CWD/migrate.log
-            fi
             git push --force $TAR_PROTO://oauth2:$GITLAB_TOKEN@$TAR_HOST/$TAR_GROUP/$_path/$_name $_branch 2>&1 | tee -a $CWD/migrate.log
         else
             print_log "$_local_path <$_branch> is the latest version"
