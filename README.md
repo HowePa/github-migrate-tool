@@ -4,7 +4,13 @@
 
 ## Requirement
 
-1. 安装 git-lfs，参考：[[installing-git-large-file-storage]](https://docs.github.com/en/repositories/working-with-files/managing-large-files/installing-git-large-file-storage)
+1. 安装 curl 和 jq
+
+    ```bash
+    sudo apt-get install curl jq -y
+    ```
+
+2. 安装 git-lfs，参考：[[installing-git-large-file-storage]](https://docs.github.com/en/repositories/working-with-files/managing-large-files/installing-git-large-file-storage)
 
     ```bash
     # 配置lfs.locksverify
@@ -27,24 +33,20 @@
 3. 迁移 GitHub Repo -> GitLab Project
 
     ```bash
-    chmod +x ./migrate-local.sh
+    # step 1: 构建迁移计划
+    ./migrate-local.sh -m schedule -s ${src_repo} -t ${tar_proj}
 
-    # 迁移指定分支，如"master"
-    ./migrate-local.sh \
-        -s "https://github.com/{owner}/{repo}" \
-        -t "http://127.0.0.1/{group}" \
-        -b "master"
+    # step 2: 迁移仓库
+    ./migrate-local.sh -m migrate -s ${src_repo} -t ${tar_proj}
 
-    # 迁移所有分支
-    ./migrate-local.sh \
-        -s "https://github.com/{owner}/{repo}" \
-        -t "http://127.0.0.1/{group}"
+    # step 3: 链接子模块
+    ./migrate-local.sh -m link -s ${src_repo} -t ${tar_proj}
     ```
 
-4. 从 GitLab 克隆项目，注意要使用 `--remote` 参数
+4. 从 GitLab 克隆项目
 
     ```bash
-    git clone --recursive --remote -b ${branch} ${proj_url}
+    git clone --recursive -b ${branch} ${proj_url}
     ```
 
 ## Description
