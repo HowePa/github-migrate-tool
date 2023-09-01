@@ -16,7 +16,7 @@ function _parse_url() { # Input(url) Return(proto, host, [group], owner, name)
 
 function _schedule() { # Input(from:owner/name, to:group, ref)
 
-    function _parse_submodule() { # Input(repo:owner/name, ref)
+    function _parse_submodule() { # Input(repo:owner/name, ref) Return(path, url)
         echo "$(
             curl --silent --location --request GET \
                 --header "Authorization: Bearer ${GITHUB_TOKEN}" \
@@ -32,7 +32,7 @@ function _schedule() { # Input(from:owner/name, to:group, ref)
         )"
     }
 
-    function _get_ref() { # Input(repo:owner/name, path, ref)
+    function _get_ref() { # Input(repo:owner/name, path, ref) Return(ref(commit_sha))
         echo "$(
             curl --silent --location --request GET \
                 --header "Authorization: Bearer ${GITHUB_TOKEN}" \
@@ -158,12 +158,12 @@ function _migrate() {
             ##### local repo
             local _local_repo="${WORK_DIR}/${_from}"
             if [ -d "$_local_repo" ]; then
+                ##### local repo already exists
                 cd $_local_repo
-                local _update_f=$(git show $_ref 2>/dev/null)
-                ##### need refresh repo || need pull commit
+                local _update_f=$(git show $_ref 2>/dev/null) # search commit in local repo
+                ##### need refresh repo || need pull new commit
                 if [ -z "$_migrate_f" ] || [ -z "$_update_f" ]; then
                     print_log "updating repo <${_to}> ..."
-                    ##### local repo already exists, update
                     git remote update
                     git push --force --all "${TAR_HOST}/${_to}"
                 fi
@@ -179,7 +179,7 @@ function _migrate() {
                     git lfs push --all "${TAR_HOST}/${_to}"
                 fi
                 git push --mirror --force "${TAR_HOST}/${_to}"
-                ##### set default branch #####
+                ##### set default branch
                 local _default_branch=$(_get_default_branch $_from)
                 local _response=$(
                     curl --silent --location --request PUT \
@@ -198,7 +198,7 @@ function _migrate() {
 
 function _link() {
 
-    function _get_gitmodules() { # Input(repo:group/owner/name, ref)
+    function _get_gitmodules() { # Input(repo:group/owner/name, ref) Return(content)
         local _proj_id=$(_get_project $1)
         echo "$(
             curl --silent --location --request GET \
@@ -207,7 +207,7 @@ function _link() {
         )"
     }
 
-    function _get_ref() { # Input(repo:group/owner/name, path, ref)
+    function _get_ref() { # Input(repo:group/owner/name, path, ref) Return(commit_sha)
         local _proj_id=$(_get_project $1)
         echo "$(
             curl --silent --location --request GET \
@@ -239,7 +239,7 @@ function _link() {
     echo "$(cat $SCHEDULE_LOG | sed -e 's/:/ /g')" |
         while read _level _from _to _ref _link_f; do
             local _linked_f=$(cat $LINK_LOG | grep "${_to}:${_ref}")
-            ##### not leaf node && never linked ref
+            ##### non-leaf node && never linked ref
             if [ "$_link_f" == "+" ] && [ -z "$_linked_f" ]; then
                 local _content=$(_get_gitmodules $_to $_ref)
                 if [ ! -z "$_content" ]; then # maybe empty .gitmodules
@@ -312,7 +312,7 @@ function _link() {
                         read _child_proto _child_host _child_group _child_owner _child_name <<<$(_parse_url $_child_url)
                         local _child_ref=$(_get_ref $_to $_child_path $_branch)
                         local _child_new_ref=$(cat $LINK_LOG | grep "${_child_group}/${_child_owner}/${_child_name}:${_child_ref}")
-                        if [ ! -z "$_child_new_ref" ]; then
+                        if [ ! -z "$_child_new_ref" ]; then # a submodule with submodules
                             _response=$(
                                 curl --silent --location --request PUT \
                                     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
@@ -330,7 +330,7 @@ function _link() {
 
 function _main() { # Input(from:url, to:url)
 
-    function _get_refs() { # Input(repo:owner/name)
+    function _get_refs() { # Input(repo:owner/name) Return(branches/commit_sha)
         local _next_refs _page=0 _refs=""
         while true; do
             let _page++
@@ -372,7 +372,7 @@ function _main() { # Input(from:url, to:url)
     #---- <tree_level>:<src_repo>:<tar_repo>:<branch/commit_sha>:<is_leaf(need_link)>
     SCHEDULE_LOG="${LOG_DIR}/s_${_group}_${_owner}_${_name}"
     touch $SCHEDULE_LOG
-    ##### MIGRATE_LOG record repo already migrate
+    ##### MIGRATE_LOG record repos already migrate
     #---- <src_repo>:<tar_repo>
     MIGRATE_LOG="${LOG_DIR}/m_${_group}_${_owner}_${_name}"
     touch $MIGRATE_LOG
