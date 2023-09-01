@@ -33,7 +33,8 @@
 3. 迁移 GitHub Repo -> GitLab Project
 
     ```bash
-    ./migrate-local.sh -s ${src_repo} -t ${tar_proj}
+    # 参数 [-s:待迁移仓库] [-t:目标Group]
+    ./migrate-local.sh -s ${src_repo} -t ${tar_group}
     ```
 
 4. 从 GitLab 克隆项目
@@ -44,14 +45,12 @@
 
 ## Description
 
-以 https://github.com/{owner}/{repo}.git 为例，脚本执行结果如下:
-1. 脚本将 GitHub Repo 克隆到本地 {pwd}/{owner}/{repo} 路径下
-2. 在指定的 GitLab Group 中创建 subgroup {owner}
-3. 在 {owner} 中创建 project {repo}
+脚本执行结果如下:
+1. 本地保存源仓库的景象，路径如：`./user/repo`
+2. 在目标 Group 中创建 subgroup，命名为：`user`
+3. 在 subgroup 中创建 proj，命名为：`repo`
 
-注意：
-1. 迁移脚本会移除 .gitmodules 中的 "blessed/" 分支前缀
-2. 迁移后所有的 submodule 都会定位到最新的 commit
+此外，还在本地 `./.migrate_log` 目录下存储执行必要的跟踪文件
 
 <p align="center">
     <img src="migrate.png">
