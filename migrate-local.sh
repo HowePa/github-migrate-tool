@@ -2,12 +2,12 @@
 
 function print_log() {
     DATE=$(date "+%Y-%m-%d %H:%M:%S")
-    echo -e "\033[32m${DATE} [INFO]\033[0m $1"
+    printf "\033[32m${DATE} [INFO]\033[0m $1\n"
 }
 
 function print_debug() {
     DATE=$(date "+%Y-%m-%d %H:%M:%S")
-    echo -e "\033[34m${DATE} [INFO]\033[0m $1"
+    printf "\033[34m${DATE} [INFO]\033[0m $1\n"
 }
 
 function _parse_url() { # Input(url) Return(proto, host, [group], owner, name)
@@ -43,8 +43,9 @@ function _schedule() { # Input(from:owner/name, to:group, ref)
         )"
     }
 
-    function _recursive_schedule() { # Input(from:owner/name, to:group, ref, level, out:file)
-        local _from=$1 _to=$2 _ref=$3 _level=$4 _file=$5
+    function _recursive_schedule() { # Input(from:owner/name, to:group, ref, level)
+        local _from=$1 _to=$2 _ref=$3 _level=$4
+        print_log "%${_level}s%${_level}s |-> <${_from}:${_ref}>"
         ##### recursive travel submodule
         local _sub_path _sub_url
         _parse_submodule $_from $_ref | while read _sub_path _sub_url; do
@@ -52,69 +53,25 @@ function _schedule() { # Input(from:owner/name, to:group, ref)
                 local _sub_ref=$(_get_ref $_from $_sub_path $_ref)
                 local _sub_owner _sub_name
                 read _ _ _sub_owner _sub_name <<<$(_parse_url $_sub_url)
-                _recursive_schedule $_sub_owner/$_sub_name $_to $_sub_ref $(expr $_level + 1) $_file
+                _recursive_schedule $_sub_owner/$_sub_name $_to $_sub_ref $(expr $_level + 1)
             fi
         done
-        ##### write tmp log
-        echo "${_level}:${_from}:${_to}/${_from}:${_ref}" >>$_file
+        ##### write schedule log
+        local _last_level=$(tail -n 1 $SCHEDULE_LOG)
+        local _is_leaf="-"
+        if [ ! -z "$_last_level" ] && [ $_level -lt ${_last_level%%:*} ]; then
+            _is_leaf="+"
+        fi
+        echo "${_level}:${_from}:${_to}/${_from}:${_ref}:${_is_leaf}" >>$SCHEDULE_LOG
     }
 
-    function _merge_schedule() { # Input(from:file, to:file)
-        local _level _from _to _ref _f _migrate_f
-        echo "$(cat $1 | sed -e 's/:/ /g')" | while read _level _from _to _ref; do
-            _f=$(cat $2 | grep :${_from}:)
-            if [ -z "$_f" ]; then
-                _migrate_f="+"
-            else
-                _migrate_f="-"
-            fi
-            _f=$(cat $2 | grep :${_to}:${_ref}:)
-            if [ -z "$_f" ]; then
-                echo "${_level}:${_from}:${_to}:${_ref}:${_migrate_f}:+" >>$2
-            else
-                echo "${_level}:${_from}:${_to}:${_ref}:${_migrate_f}:-" >>$2
-            fi
-        done
-    }
-
-    function _get_refs() { # Input(repo:owner/name)
-        local _next_refs _page=0 _refs=""
-        while true; do
-            let _page++
-            _next_refs=$(
-                curl --silent --location --request GET \
-                    --header "Authorization: Bearer ${GITHUB_TOKEN}" \
-                    --header "Accept: application/vnd.github.raw+json" \
-                    --header "X-GitHub-Api-Version: 2022-11-28" \
-                    --url https://api.github.com/repos/${1}/branches?page=${_page} |
-                    jq -r '.[] | .name'
-            )
-            if [ -z "$_next_refs" ]; then
-                break
-            fi
-            _refs=$(echo -e "${_refs}\n${_next_refs}")
-        done
-        echo "$(sed '1d' <<<"$_refs")"
-    }
-
-    local _ref=$3
-    if [ -z "$_ref" ]; then
-        print_log "creating schedule ..."
-        _get_refs $1 | while read _ref; do
-            print_log " |-> for ref <$_ref>"
-            local _schedule_f=$(cat $SCHEDULE_LOG | grep $_ref)
-            if [ -z "$_schedule_f" ]; then
-                cat /dev/null >"${LOG_DIR}/schedule.tmp.log"
-                _recursive_schedule $1 $2 $_ref 0 "${LOG_DIR}/schedule.tmp.log"
-                _merge_schedule "${LOG_DIR}/schedule.tmp.log" $SCHEDULE_LOG
-                rm "${LOG_DIR}/schedule.tmp.log"
-            fi
-        done
+    local _ref=$3 _schedule_f=$(cat $SCHEDULE_LOG | grep "${1}:${_ref}")
+    if [ -z "$_schedule_f" ]; then
+        print_log "creating schedule for ref <${1}:$_ref> ..."
+        _recursive_schedule $1 $2 $_ref 0
     else
-        print_log "creating schedule for ref <$_ref>"
-        cat /dev/null >"${LOG_DIR}/schedule.tmp.log"
-        _recursive_schedule $1 $2 $_ref 0 "${LOG_DIR}/schedule.tmp.log"
-        _merge_schedule "${LOG_DIR}/schedule.tmp.log" $SCHEDULE_LOG
+        # Todo: refresh schedule
+        print_log "already has schedule for ref <${1}:$_ref>"
     fi
 }
 
@@ -139,7 +96,7 @@ function _get_group() { # Input(group[/owner]) Return(id)
     )"
 }
 
-function _migrate() { # Input(schedule)
+function _migrate() {
 
     function _create_project() { # Input(repo:name, group:id) Return(id)
         echo "$(
@@ -184,56 +141,62 @@ function _migrate() { # Input(schedule)
     }
 
     ##### travel schedule
-    local _level _from _to _ref _migrate_f _link_f
-    echo "$(cat $1 | sed -e 's/:/ /g')" |
-        while read _level _from _to _ref _migrate_f _link_f; do
-            if [ "$_migrate_f" == "+" ]; then
-                ##### remote repo
-                local _proj_id _group_id
-                _proj_id=$(_get_project $_to)
-                if [ "$_proj_id" == "null" ]; then
-                    _group_id=$(_get_group ${_to%/*})
-                    if [ "$_group_id" == "null" ]; then
-                        _group_id=$(_create_subgroup ${_to%/*})
-                    fi
-                    _proj_id=$(_create_project ${_to##*/} $_group_id)
+    local _level _from _to _ref _link_f
+    echo "$(cat $SCHEDULE_LOG | sed -e 's/:/ /g')" |
+        while read _level _from _to _ref _link_f; do
+            local _migrate_f=$(cat $MIGRATE_LOG | grep "${_from}:${_to}")
+            ##### remote repo
+            local _proj_id _group_id
+            _proj_id=$(_get_project $_to)
+            if [ "$_proj_id" == "null" ]; then
+                _group_id=$(_get_group ${_to%/*})
+                if [ "$_group_id" == "null" ]; then
+                    _group_id=$(_create_subgroup ${_to%/*})
                 fi
-
-                ##### local repo
-                local _local_repo="${WORK_DIR}/${_from}"
-                if [ -d "$_local_repo" ]; then
+                _proj_id=$(_create_project ${_to##*/} $_group_id)
+            fi
+            ##### local repo
+            local _local_repo="${WORK_DIR}/${_from}"
+            if [ -d "$_local_repo" ]; then
+                cd $_local_repo
+                local _update_f=$(git show $_ref 2>/dev/null)
+                ##### need refresh repo || need pull commit
+                if [ -z "$_migrate_f" ] || [ -z "$_update_f" ]; then
                     print_log "updating repo <${_to}> ..."
                     ##### local repo already exists, update
-                    cd $_local_repo
                     git remote update
                     git push --force --all "${TAR_HOST}/${_to}"
-                    cd - >/dev/null
-                else
-                    print_log "initializing repo <${_to}> ..."
-                    ##### local repo not exists, clone
-                    git clone --mirror "${SRC_HOST}/${_from}" $_local_repo
-                    cd $_local_repo
-                    local _lfs_f="$(git lfs ls-files)"
-                    if [ ! -z "$_lfs_f" ]; then
-                        git lfs fetch --all "${SRC_HOST}/${_from}"
-                        git lfs push --all "${TAR_HOST}/${_to}"
-                    fi
-                    git push --mirror --force "${TAR_HOST}/${_to}"
-                    ##### set default branch #####
-                    local _default_branch=$(_get_default_branch $_from)
-                    local _response=$(
-                        curl --silent --location --request PUT \
-                            --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-                            --url "${TAR_HOST}/api/v4/projects/${_proj_id}" \
-                            --data "default_branch=${_default_branch}"
-                    )
-                    cd - >/dev/null
                 fi
+                cd - >/dev/null
+            else
+                print_log "initializing repo <${_to}> ..."
+                ##### local repo not exists, clone
+                git clone --mirror "${SRC_HOST}/${_from}" $_local_repo
+                cd $_local_repo
+                local _lfs_f="$(git lfs ls-files)"
+                if [ ! -z "$_lfs_f" ]; then
+                    git lfs fetch --all "${SRC_HOST}/${_from}"
+                    git lfs push --all "${TAR_HOST}/${_to}"
+                fi
+                git push --mirror --force "${TAR_HOST}/${_to}"
+                ##### set default branch #####
+                local _default_branch=$(_get_default_branch $_from)
+                local _response=$(
+                    curl --silent --location --request PUT \
+                        --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+                        --url "${TAR_HOST}/api/v4/projects/${_proj_id}" \
+                        --data "default_branch=${_default_branch}"
+                )
+                cd - >/dev/null
+            fi
+            ##### write migrate log
+            if [ -z "$_migrate_f" ]; then
+                echo "${_from}:${_to}" >>$MIGRATE_LOG
             fi
         done
 }
 
-function _link() { # Input(schedule)
+function _link() {
 
     function _get_gitmodules() { # Input(repo:group/owner/name, ref)
         local _proj_id=$(_get_project $1)
@@ -271,15 +234,13 @@ function _link() { # Input(schedule)
         cat /dev/null >$LINK_LOG
     }
 
-    ##### clean
-    _clean
     ##### travel schedule
-    local _level _from _to _ref _migrate_f _link_f
-    local _last_level=0
-    echo "$(cat $1 | sed -e 's/:/ /g')" |
-        while read _level _from _to _ref _migrate_f _link_f; do
-            ##### unique ref && not leaf node
-            if [ "$_link_f" == "+" ] && [ $_level -lt $_last_level ]; then
+    local _level _from _to _ref _link_f
+    echo "$(cat $SCHEDULE_LOG | sed -e 's/:/ /g')" |
+        while read _level _from _to _ref _link_f; do
+            local _linked_f=$(cat $LINK_LOG | grep "${_to}:${_ref}")
+            ##### not leaf node && never linked ref
+            if [ "$_link_f" == "+" ] && [ -z "$_linked_f" ]; then
                 local _content=$(_get_gitmodules $_to $_ref)
                 if [ ! -z "$_content" ]; then # maybe empty .gitmodules
                     print_log "linking submodules for <${_to}:${_ref}> ..."
@@ -293,6 +254,7 @@ function _link() { # Input(schedule)
                     local _post_content=$(echo $(echo "$_new_content" | base64) | sed -e 's/ //g')
                     if [ $_level -eq 0 ]; then
                         #### case 1: if root node, directly update
+                        ### step 1: update .gitmodules
                         _response=$(
                             curl --silent --location --request PUT \
                                 --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
@@ -307,6 +269,8 @@ function _link() { # Input(schedule)
                         )
                         _branch="${_ref}"
                         print_log " |-> update .gitmodules for <${_to}:${_branch}>"
+                        ### step 2: store ref reflection
+                        echo "${_to}:${_ref}:${_ref}" >>$LINK_LOG
                     else
                         #### case 2: if mid node, update to temp link branch
                         ### step 1: delete old temp link branch
@@ -356,88 +320,82 @@ function _link() { # Input(schedule)
                                     --data "branch=${_branch}&commit_sha=${_child_new_ref##*:}" |
                                     jq -r .message
                             )
-                            print_log " |-> redirect $_child_path to <${_child_new_ref##*:}>"
+                            print_log " *-> redirect $_child_path to <${_child_new_ref##*:}>"
                         fi
                     done
                 fi
             fi
-            _last_level=$_level
         done
 }
 
-function _main() { # Input(mission, from:url, to:url, ref)
+function _main() { # Input(from:url, to:url)
+
+    function _get_refs() { # Input(repo:owner/name)
+        local _next_refs _page=0 _refs=""
+        while true; do
+            let _page++
+            _next_refs=$(
+                curl --silent --location --request GET \
+                    --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+                    --header "Accept: application/vnd.github.raw+json" \
+                    --header "X-GitHub-Api-Version: 2022-11-28" \
+                    --url https://api.github.com/repos/${1}/branches?page=${_page} |
+                    jq -r '.[] | .name'
+            )
+            if [ -z "$_next_refs" ]; then
+                break
+            fi
+            _refs=$(echo -e "${_refs}\n${_next_refs}")
+        done
+        echo "$(sed '1d' <<<"$_refs")"
+    }
+
     ##### parse url
     local _src_proto _src_host _owner _name
-    read _src_proto _src_host _owner _name <<<$(_parse_url $2)
+    read _src_proto _src_host _owner _name <<<$(_parse_url $1)
     local _tar_proto _tar_host _group
-    read _tar_proto _tar_host _group <<<$(_parse_url $3)
+    read _tar_proto _tar_host _group <<<$(_parse_url $2)
     SRC_HOST="${_src_proto}://oauth2:${GITHUB_TOKEN}@${_src_host}"
     TAR_HOST="${_tar_proto}://oauth2:${GITLAB_TOKEN}@${_tar_host}"
     ##### initial workspace
-    WORK_DIR="$(pwd)/._migrate_log"
-    if [ ! -d $WORK_DIR ]; then
-        mkdir $WORK_DIR
+    WORK_DIR="$(pwd)"
+    META_DIR="${WORK_DIR}/.migrate_log"
+    if [ ! -d $META_DIR ]; then
+        mkdir $META_DIR
     fi
-    LOG_DIR="${WORK_DIR}/${_owner}_${_name}"
+    LOG_DIR="${META_DIR}/${_owner}_${_name}"
     if [ ! -d $LOG_DIR ]; then
         mkdir $LOG_DIR
     fi
     VIS_LEVEL="public"
     ##### SCHEDULE_LOG record migration plan
-    #---- <id>:<tree_level>:<src_repo>:<tar_repo>:<branch/commit_sha>:<is_leaf(need_link)>
-    SCHEDULE_LOG="${LOG_DIR}/s_${_group}_${_owner}_${_name}.log"
+    #---- <tree_level>:<src_repo>:<tar_repo>:<branch/commit_sha>:<is_leaf(need_link)>
+    SCHEDULE_LOG="${LOG_DIR}/s_${_group}_${_owner}_${_name}"
+    touch $SCHEDULE_LOG
     ##### MIGRATE_LOG record repo already migrate
     #---- <src_repo>:<tar_repo>
-    MIGRATE_LOG="${LOG_DIR}/m_${_group}_${_owner}_${_name}.log"
+    MIGRATE_LOG="${LOG_DIR}/m_${_group}_${_owner}_${_name}"
+    touch $MIGRATE_LOG
     ##### LINK_LOG record temp branches built for keep link
     #---- <tar_repo>:<branch/old_commit_sha>:<branch/new_commit_sha>
-    LINK_LOG="${LOG_DIR}/l_${_group}_${_owner}_${_name}.log"
-    ##### Todo: global count log for breakpoint continuation
-    ##### start mission
-    case $1 in
-    schedule)
-        print_log "================ SCHEDULE ================"
-        touch $SCHEDULE_LOG
-        _schedule "${_owner}/${_name}" $_group $4
-        ;;
-    migrate)
-        print_log "================ MIGRATE ================"
-        if [ ! -f $SCHEDULE_LOG ]; then
-            echo "Miss SCHEDULE_LOG"
-            exit 2
-        fi
-        touch $MIGRATE_LOG
+    LINK_LOG="${LOG_DIR}/l_${_group}_${_owner}_${_name}"
+    touch $LINK_LOG
+    local _ref
+    _get_refs "${_owner}/${_name}" | while read _ref; do
+        _schedule "${_owner}/${_name}" $_group $_ref
         _migrate $SCHEDULE_LOG
-        ;;
-    link)
-        print_log "================ LINK ================"
-        if [ ! -f $SCHEDULE_LOG ]; then
-            echo "Miss SCHEDULE_LOG"
-            exit 2
-        fi
-        touch $LINK_LOG
         _link $SCHEDULE_LOG
-        ;;
-    *)
-        echo "Unknown Mission"
-        ;;
-    esac
+    done
 }
 
-while getopts "hm:s:t:b:" opt; do
+while getopts "hs:t:" opt; do
     case $opt in
     h)
         echo '
-    -m  mission, option ["schedule", "migrate", "link"]
     -s  source repo url, like "https://github.com/{owner}/{repo}"
     -t  target group url, like "http://127.0.0.1/{group}"
-    -b  branch, specifies which branch to traverse, like "master", default "HEAD"
-                if not set, migrate all branches
         '
         exit 0
-        ;;
-    m)
-        MISSION=$OPTARG
         ;;
     s)
         SRC_URL=$OPTARG
@@ -445,13 +403,10 @@ while getopts "hm:s:t:b:" opt; do
     t)
         TAR_URL=$OPTARG
         ;;
-    b)
-        BRANCH=$OPTARG
-        ;;
     *)
         exit 1
         ;;
     esac
 done
 
-_main $MISSION $SRC_URL $TAR_URL $BRANCH
+_main $SRC_URL $TAR_URL
