@@ -104,6 +104,7 @@ function _schedule() { # Input(from:owner/name, to:group, ref)
             print_log " |-> for ref <$_ref>"
             local _schedule_f=$(cat $SCHEDULE_LOG | grep $_ref)
             if [ -z "$_schedule_f" ]; then
+                cat /dev/null >"${LOG_DIR}/schedule.tmp.log"
                 _recursive_schedule $1 $2 $_ref 0 "${LOG_DIR}/schedule.tmp.log"
                 _merge_schedule "${LOG_DIR}/schedule.tmp.log" $SCHEDULE_LOG
                 rm "${LOG_DIR}/schedule.tmp.log"
@@ -111,9 +112,9 @@ function _schedule() { # Input(from:owner/name, to:group, ref)
         done
     else
         print_log "creating schedule for ref <$_ref>"
+        cat /dev/null >"${LOG_DIR}/schedule.tmp.log"
         _recursive_schedule $1 $2 $_ref 0 "${LOG_DIR}/schedule.tmp.log"
-        _merge_schedule "${LOG_DIR}/schedule.tmp.log" "${SCHEDULE_LOG}"
-        rm "${LOG_DIR}/schedule.tmp.log"
+        _merge_schedule "${LOG_DIR}/schedule.tmp.log" $SCHEDULE_LOG
     fi
 }
 
@@ -373,20 +374,30 @@ function _main() { # Input(mission, from:url, to:url, ref)
     SRC_HOST="${_src_proto}://oauth2:${GITHUB_TOKEN}@${_src_host}"
     TAR_HOST="${_tar_proto}://oauth2:${GITLAB_TOKEN}@${_tar_host}"
     ##### initial workspace
-    WORK_DIR="$(pwd)"
-    LOG_DIR="${WORK_DIR}/._migrate_log"
-    VIS_LEVEL="public"
+    WORK_DIR="$(pwd)/._migrate_log"
+    if [ ! -d $WORK_DIR ]; then
+        mkdir $WORK_DIR
+    fi
+    LOG_DIR="${WORK_DIR}/${_owner}_${_name}"
     if [ ! -d $LOG_DIR ]; then
         mkdir $LOG_DIR
     fi
+    VIS_LEVEL="public"
+    ##### SCHEDULE_LOG record migration plan
+    #---- <id>:<tree_level>:<src_repo>:<tar_repo>:<branch/commit_sha>:<is_leaf(need_link)>
     SCHEDULE_LOG="${LOG_DIR}/s_${_group}_${_owner}_${_name}.log"
+    ##### MIGRATE_LOG record repo already migrate
+    #---- <src_repo>:<tar_repo>
+    MIGRATE_LOG="${LOG_DIR}/m_${_group}_${_owner}_${_name}.log"
+    ##### LINK_LOG record temp branches built for keep link
+    #---- <tar_repo>:<branch/old_commit_sha>:<branch/new_commit_sha>
     LINK_LOG="${LOG_DIR}/l_${_group}_${_owner}_${_name}.log"
+    ##### Todo: global count log for breakpoint continuation
     ##### start mission
     case $1 in
     schedule)
         print_log "================ SCHEDULE ================"
         touch $SCHEDULE_LOG
-        # cat /dev/null >$SCHEDULE_LOG
         _schedule "${_owner}/${_name}" $_group $4
         ;;
     migrate)
@@ -395,6 +406,7 @@ function _main() { # Input(mission, from:url, to:url, ref)
             echo "Miss SCHEDULE_LOG"
             exit 2
         fi
+        touch $MIGRATE_LOG
         _migrate $SCHEDULE_LOG
         ;;
     link)

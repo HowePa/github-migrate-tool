@@ -33,14 +33,7 @@
 3. 迁移 GitHub Repo -> GitLab Project
 
     ```bash
-    # step 1: 构建迁移计划
-    ./migrate-local.sh -m schedule -s ${src_repo} -t ${tar_proj}
-
-    # step 2: 迁移仓库
-    ./migrate-local.sh -m migrate -s ${src_repo} -t ${tar_proj}
-
-    # step 3: 链接子模块
-    ./migrate-local.sh -m link -s ${src_repo} -t ${tar_proj}
+    ./migrate-local.sh -s ${src_repo} -t ${tar_proj}
     ```
 
 4. 从 GitLab 克隆项目
