@@ -65,7 +65,7 @@ function _schedule() { # Input(from:owner/name, to:group, ref)
         echo "${_level}:${_from}:${_to}/${_from}:${_ref}:${_is_leaf}" >>$SCHEDULE_LOG
     }
 
-    local _ref=$3 _schedule_f=$(cat $SCHEDULE_LOG | grep ":${1}:${_ref}:")
+    local _ref=$3 _schedule_f=$(cat $SCHEDULE_LOG | grep ":${1}:${2}:${1}:${_ref}:")
     if [ -z "$_schedule_f" ]; then
         print_log "creating schedule for ref <${1}:$_ref> ..."
         _recursive_schedule $1 $2 $_ref 0
