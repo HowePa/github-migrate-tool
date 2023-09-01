@@ -370,10 +370,6 @@ function _main() { # Input(from:url, to:url)
         mkdir $LOG_DIR
     fi
     VIS_LEVEL="public"
-    ##### SCHEDULE_LOG record migration plan
-    #---- <tree_level>:<src_repo>:<tar_repo>:<branch/commit_sha>:<is_leaf(need_link)>
-    SCHEDULE_LOG="${LOG_DIR}/s_${_group}_${_owner}_${_name}"
-    touch $SCHEDULE_LOG
     ##### MIGRATE_LOG record repos already migrate
     #---- <src_repo>:<tar_repo>
     MIGRATE_LOG="${LOG_DIR}/m_${_group}_${_owner}_${_name}"
@@ -384,6 +380,11 @@ function _main() { # Input(from:url, to:url)
     touch $LINK_LOG
     local _ref
     _get_refs "${_owner}/${_name}" | while read _ref; do
+        ##### SCHEDULE_LOG record migration plan
+        #---- <tree_level>:<src_repo>:<tar_repo>:<branch/commit_sha>:<is_leaf(need_link)>
+        SCHEDULE_LOG="${LOG_DIR}/s_${_group}_${_owner}_${_name}_${_ref}"
+        touch $SCHEDULE_LOG
+
         _schedule "${_owner}/${_name}" $_group $_ref
         _migrate $SCHEDULE_LOG
         _link $SCHEDULE_LOG
