@@ -5,6 +5,11 @@ function print_log() {
     echo -e "\033[32m${DATE} [INFO]\033[0m $1"
 }
 
+function print_debug() {
+    DATE=$(date "+%Y-%m-%d %H:%M:%S")
+    echo -e "\033[34m${DATE} [INFO]\033[0m $1"
+}
+
 function _parse_url() { # Input(url) Return(proto, host, [group], owner, name)
     echo "$(echo "$1" | awk 'BEGIN{FS="://|/|.git"}{print $1" "$2" "$3" "$4" "$5}')"
 }
@@ -94,10 +99,11 @@ function _schedule() { # Input(from:owner/name, to:group, ref)
 
     local _ref=$3
     if [ -z "$_ref" ]; then
+        print_log "creating schedule ..."
         _get_refs $1 | while read _ref; do
+            print_log " |-> for ref <$_ref>"
             local _schedule_f=$(cat $SCHEDULE_LOG | grep $_ref)
             if [ -z "$_schedule_f" ]; then
-                print_log "creating schedule for ref <$_ref>"
                 _recursive_schedule $1 $2 $_ref 0 "${LOG_DIR}/schedule.tmp.log"
                 _merge_schedule "${LOG_DIR}/schedule.tmp.log" $SCHEDULE_LOG
                 rm "${LOG_DIR}/schedule.tmp.log"
@@ -195,14 +201,14 @@ function _migrate() { # Input(schedule)
                 ##### local repo
                 local _local_repo="${WORK_DIR}/${_from}"
                 if [ -d "$_local_repo" ]; then
-                    print_log "updating repo <${_to}>"
+                    print_log "updating repo <${_to}> ..."
                     ##### local repo already exists, update
                     cd $_local_repo
                     git remote update
-                    git push --force "${TAR_HOST}/${_to}"
+                    git push --force --all "${TAR_HOST}/${_to}"
                     cd - >/dev/null
                 else
-                    print_log "initializing repo <${_to}>"
+                    print_log "initializing repo <${_to}> ..."
                     ##### local repo not exists, clone
                     git clone --mirror "${SRC_HOST}/${_from}" $_local_repo
                     cd $_local_repo
@@ -248,6 +254,24 @@ function _link() { # Input(schedule)
         )"
     }
 
+    function _clean() {
+        local _response
+        local _proj _origin_ref _new_ref
+        print_log "cleaning old temp link branch ..."
+        echo "$(cat $LINK_LOG | sed -e 's/:/ /g')" | while read _proj _origin_ref _new_ref; do
+            local _proj_id=$(_get_project $_proj)
+            _response=$(
+                curl --silent --location --request DELETE \
+                    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+                    --url "${TAR_HOST}/api/v4/projects/${_proj_id}/repository/branches/_${_origin_ref}"
+            )
+            print_log " |-> delete <${_proj}:_${_origin_ref}>"
+        done
+        cat /dev/null >$LINK_LOG
+    }
+
+    ##### clean
+    _clean
     ##### travel schedule
     local _level _from _to _ref _migrate_f _link_f
     local _last_level=0
@@ -257,18 +281,17 @@ function _link() { # Input(schedule)
             if [ "$_link_f" == "+" ] && [ $_level -lt $_last_level ]; then
                 local _content=$(_get_gitmodules $_to $_ref)
                 if [ ! -z "$_content" ]; then # maybe empty .gitmodules
-                    print_log "linking submodules for <$_to:$_ref>"
+                    print_log "linking submodules for <${_to}:${_ref}> ..."
                     ##### build new .gitmodules
-                    local _new_content=$(echo $(
+                    local _new_content=$(
                         echo "$_content" |
-                            sed -e 's/'https':\/\/'github.com'\//'${TAR_HOST%%://*}':\/\/'${TAR_HOST##*@}'\/'${_to%%/*}'\//g' |
-                            base64
-                    ) | sed -e 's/ //g')
+                            sed -e 's/'https':\/\/'github.com'\//'${TAR_HOST%%://*}':\/\/'${TAR_HOST##*@}'\/'${_to%%/*}'\//g'
+                    )
                     ##### update .gitmodules
                     local _proj_id=$(_get_project $_to) _response _branch
+                    local _post_content=$(echo $(echo "$_new_content" | base64) | sed -e 's/ //g')
                     if [ $_level -eq 0 ]; then
                         #### case 1: if root node, directly update
-                        ### step 1: update .gitmodules
                         _response=$(
                             curl --silent --location --request PUT \
                                 --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
@@ -276,12 +299,13 @@ function _link() { # Input(schedule)
                                 --url "${TAR_HOST}/api/v4/projects/${_to//\//%2F}/repository/files/.gitmodules" \
                                 --data '{
                                     "branch": "'${_ref}'",
-                                    "content": "'${_new_content}'",
+                                    "content": "'${_post_content}'",
                                     "commit_message": "Update .gitmodules",
                                     "encoding": "base64"
                                 }'
                         )
                         _branch="${_ref}"
+                        print_log " |-> update .gitmodules for <${_to}:${_branch}>"
                     else
                         #### case 2: if mid node, update to temp link branch
                         ### step 1: delete old temp link branch
@@ -298,31 +322,32 @@ function _link() { # Input(schedule)
                                 --form "start_sha=${_ref}" \
                                 --form "actions[][action]=update" \
                                 --form "actions[][file_path]=.gitmodules" \
-                                --form "actions[][content]=${_new_content}" \
+                                --form "actions[][content]=${_post_content}" \
                                 --form "actions[][encoding]=base64" \
                                 --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
                                 "${TAR_HOST}/api/v4/projects/${_proj_id}/repository/commits" |
                                 jq -r .id
                         )
                         _branch="_${_ref}"
+                        print_log " |-> create temp link branch <${_to}:${_response}>"
+                        print_log " |-> update .gitmodules for <${_to}:${_response}>"
                         ### step 3: store ref reflection
-                        echo "${_from}:${_ref}:${_response}" >>$LINK_LOG
+                        echo "${_to}:${_ref}:${_response}" >>$LINK_LOG
                     fi
                     ##### redirect submodules with new ref
                     local _child_path _child_url
-                    echo "$_content" |
+                    echo "$_new_content" |
                         sed -e 's/\t//g' -e 's/ //g' |
                         awk '{ORS=" "}{FS="\"|="}{
                             if($1=="[submodule"){printf "\n"}
                             else if($1=="path"){print $2}
                             else if($1=="url"){print $2}
                             } END {printf "\n"}' | while read _child_path _child_url; do
-                        local _child_proto _child_host _child_owner _child_name
-                        read _child_proto _child_host _child_owner _child_name <<<$(_parse_url $_child_url)
+                        local _child_proto _child_host _child_group _child_owner _child_name
+                        read _child_proto _child_host _child_group _child_owner _child_name <<<$(_parse_url $_child_url)
                         local _child_ref=$(_get_ref $_to $_child_path $_branch)
-                        local _child_new_ref=$(cat $LINK_LOG | grep "${_child_owner}/${_child_name}:${_child_ref}")
+                        local _child_new_ref=$(cat $LINK_LOG | grep "${_child_group}/${_child_owner}/${_child_name}:${_child_ref}")
                         if [ ! -z "$_child_new_ref" ]; then
-                            print_log " |-> redirect $_child_path to <${_child_new_ref##*:}>"
                             _response=$(
                                 curl --silent --location --request PUT \
                                     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
@@ -330,6 +355,7 @@ function _link() { # Input(schedule)
                                     --data "branch=${_branch}&commit_sha=${_child_new_ref##*:}" |
                                     jq -r .message
                             )
+                            print_log " |-> redirect $_child_path to <${_child_new_ref##*:}>"
                         fi
                     done
                 fi
@@ -378,7 +404,6 @@ function _main() { # Input(mission, from:url, to:url, ref)
             exit 2
         fi
         touch $LINK_LOG
-        # cat /dev/null >$LINK_LOG
         _link $SCHEDULE_LOG
         ;;
     *)
