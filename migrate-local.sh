@@ -141,6 +141,7 @@ function _migrate() {
     }
 
     ##### travel schedule
+    print_log "migrating ..."
     local _level _from _to _ref _link_f
     echo "$(cat $SCHEDULE_LOG | sed -e 's/:/ /g')" |
         while read _level _from _to _ref _link_f; do
