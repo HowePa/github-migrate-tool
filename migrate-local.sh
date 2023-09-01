@@ -157,6 +157,7 @@ function _migrate() {
                 _proj_id=$(_create_project ${_to##*/} $_group_id)
             fi
             ##### local repo
+            # Todo: error handling
             local _local_repo="${WORK_DIR}/${_from}"
             if [ -d "$_local_repo" ]; then
                 ##### local repo already exists
