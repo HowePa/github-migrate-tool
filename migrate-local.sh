@@ -166,7 +166,7 @@ function _migrate() {
                 if [ -z "$_migrate_f" ] || [ -z "$_update_f" ]; then
                     print_log "updating repo <${_to}> ..."
                     git remote update
-                    git push --force --all "${TAR_HOST}/${_to}"
+                    git push --force "${TAR_HOST}/${_to}" $_ref
                 fi
                 cd - >/dev/null
             else
