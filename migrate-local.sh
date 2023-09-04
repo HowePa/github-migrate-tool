@@ -66,13 +66,12 @@ function _schedule() { # Input(from:owner/name, to:group, ref)
     }
 
     local _ref=$3 _schedule_f=$(cat $SCHEDULE_LOG | grep ":${1}:${2}:${1}:${_ref}:")
-    if [ -z "$_schedule_f" ]; then
-        print_log "creating schedule for ref <${1}:$_ref> ..."
-        _recursive_schedule $1 $2 $_ref 0
+    if [ ! -z "$_schedule_f" ]; then
+        print_log "refresh schedule for ref <${1}:$_ref> ..."
     else
-        # Todo: refresh schedule
-        print_log "already has schedule for ref <${1}:$_ref>"
+        print_log "creating schedule for ref <${1}:$_ref> ..."
     fi
+    _recursive_schedule $1 $2 $_ref 0
 }
 
 function _get_project() { # Input(repo:[group/]owner/name) Return(id)
@@ -330,7 +329,7 @@ function _link() {
         done
 }
 
-function _main() { # Input(from:url, to:url)
+function _main() { # Input(from:url, to:url, ref:branch)
 
     function _get_refs() { # Input(repo:owner/name) Return(branches/commit_sha)
         local _next_refs _page=0 _refs=""
@@ -378,25 +377,33 @@ function _main() { # Input(from:url, to:url)
     #---- <tar_repo>:<branch/old_commit_sha>:<branch/new_commit_sha>
     LINK_LOG="${LOG_DIR}/l_${_group}_${_owner}_${_name}"
     touch $LINK_LOG
-    local _ref
-    _get_refs "${_owner}/${_name}" | while read _ref; do
-        ##### SCHEDULE_LOG record migration plan
-        #---- <tree_level>:<src_repo>:<tar_repo>:<branch/commit_sha>:<is_leaf(need_link)>
-        SCHEDULE_LOG="${LOG_DIR}/s_${_group}_${_owner}_${_name}_${_ref}"
+    local _ref=$3
+    if [ ! -z $_ref ]; then
+        SCHEDULE_LOG="${LOG_DIR}/s_${_group}_${_owner}_${_name}_${_ref//\//-}"
         touch $SCHEDULE_LOG
-
         _schedule "${_owner}/${_name}" $_group $_ref
-        _migrate $SCHEDULE_LOG
-        _link $SCHEDULE_LOG
-    done
+        _migrate
+        _link
+    else
+        _get_refs "${_owner}/${_name}" | while read _ref; do
+            ##### SCHEDULE_LOG record migration plan
+            #---- <tree_level>:<src_repo>:<tar_repo>:<branch/commit_sha>:<is_leaf(need_link)>
+            SCHEDULE_LOG="${LOG_DIR}/s_${_group}_${_owner}_${_name}_${_ref//\//-}"
+            touch $SCHEDULE_LOG
+            _schedule "${_owner}/${_name}" $_group $_ref
+            _migrate
+            _link
+        done
+    fi
 }
 
-while getopts "hs:t:" opt; do
+while getopts "hs:t:b:" opt; do
     case $opt in
     h)
         echo '
     -s  source repo url, like "https://github.com/{owner}/{repo}"
     -t  target group url, like "http://127.0.0.1/{group}"
+    -b  branch, like "master"
         '
         exit 0
         ;;
@@ -406,10 +413,13 @@ while getopts "hs:t:" opt; do
     t)
         TAR_URL=$OPTARG
         ;;
+    b)
+        TAR_REF=$OPTARG
+        ;;
     *)
         exit 1
         ;;
     esac
 done
 
-_main $SRC_URL $TAR_URL
+_main $SRC_URL $TAR_URL $TAR_REF
