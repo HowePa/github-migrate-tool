@@ -37,7 +37,7 @@ function func() { # Input(work_dir)
                 jq -r .id 
         )
         if [ "$sub_proj_id" != "null" ] && [ "$sub_proj_sha1" != "null" ]; then
-            print_log "find deps at ${GITLAB_HOST}/${DEPS_GROUP}/${sub_owner}/${sub_name}"
+            print_hit "find deps at ${GITLAB_HOST}/${DEPS_GROUP}/${sub_owner}/${sub_name}"
             # replace
             git submodule --quiet set-url $sub_path ${GITLAB_HOST}/${DEPS_GROUP}/${sub_owner}/${sub_name}
             git submodule update --init $sub_path
