@@ -87,3 +87,29 @@
 <p align="center">
     <img src="migrate.png">
 </p>
+
+原理：  
+将主仓库与子模块之间的依赖关系看作一棵树，对于只存在直接子模块的仓库直接修改 `.gitmodules` 中的 url 即可，
+
+```bash
+git submodule set-url <submodule_path> <new_url>
+```
+
+但若是存在间接的子模块（即，两层以上的依赖树），则需要修改中间结点的 `.gitmodules` 并提交到指定的 commit 以后。首先，git 以 commit sha 来追踪子模块，输出 submodule 的状态可以看到类似信息，
+
+```bash
+git submodule status
+# -6ad3ad49e37784dc24000f52b49023c71c5e1b99 path
+```
+
+其次，指定 commit 后仍会有其他提交，无法保证仍可以顺利通过编译，故静态脚本基于每个中间结点的 commit 创建新的临时链接分支，名为 "_<commit_sha>"。并将新旧 commit 的映射关系存储在 `.migrate_log` 路径下。
+
+### Dynamic
+
+动态脚本直接遍历本地仓库的每个子模块。若存在已经迁移的仓库，且在已迁移仓库中能匹配到对应的 commit sha，则直接修改 url，并更新子模块。若未满足以上条件，则使用原始 url 更新子模块，并 push 到 GitLab 上，操作如下
+
+```bash
+git submodule update --init <submodule_path>
+cd <submodule_path>
+git push gitlab HEAD:ref/heads/_<commit_sha>
+```
