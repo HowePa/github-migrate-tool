@@ -78,7 +78,7 @@
 脚本会检测本地仓库的每个子模块，
 1. 若存在于依赖组则替换 url 直接 clone
 2. 若不存在于依赖组则从 GitHub 下载并 push 到依赖组中
-3. 执行完脚本，本地仓库直接可用，相当于执行 `git submoudle update --init --recursive`
+3. 执行完脚本，本地仓库直接可用，相当于执行 `git submodule update --init --recursive`
 
 ## Description
 
