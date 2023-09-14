@@ -41,7 +41,7 @@ function func() { # Input(work_dir)
             # replace
             git submodule --quiet set-url $sub_path ${GITLAB_HOST}/${DEPS_GROUP}/${sub_owner}/${sub_name}
             git submodule update --init $sub_path
-            git submodule --quiet set-url https://github.com/${sub_owner}/${sub_name}
+            git submodule --quiet set-url $sub_path https://github.com/${sub_owner}/${sub_name}
         else
             print_miss "migrate deps to ${GITLAB_HOST}/${DEPS_GROUP}/${sub_owner}/${sub_name}"
             # migrate or update
