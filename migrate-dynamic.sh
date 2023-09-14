@@ -94,3 +94,5 @@ DEPS_GROUP_ID=$(
         jq .id
 )
 func $1
+# reset
+cd $1 && git submodule --quiet foreach --recursive git reset --hard $(git rev-parse)
