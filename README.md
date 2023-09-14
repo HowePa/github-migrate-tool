@@ -72,7 +72,7 @@
     export GITLAB_TOKEN=<gitlab_token>
     export GITLAB_HOST=http://oauth2:<gitlab_token>@<gitlab_host>
     export DEPS_GROUP=<deps_group_name>
-    ./migrate-dynamic.sh <local_path>
+    ./migrate-dynamic.sh <local_path> # <local_path>应该是绝对路径
     ```
 
 脚本会检测本地仓库的每个子模块，
